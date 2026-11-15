@@ -14,7 +14,7 @@ The public receiving address is configured in the app. Never add seed phrases, p
 
 ## Build
 
-GitHub Actions builds a debug APK using JDK 17, Android SDK 35, and Gradle 8.9.
+GitHub Actions builds a debug APK using JDK 17, Android SDK 35, and Gradle 8.9. Every push to `main` starts the Android build workflow. The APK is published as the `mining-btc-debug-apk` workflow artifact after a successful build.
 
 ## Safety
 
