@@ -98,7 +98,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             send(JSONObject().put("id", 1).put("method", "mining.subscribe")
                 .put("params", JSONArray().put("VertilMiningBTC/0.2")))
             val sub = awaitResponse(1, subscribeResponse, 10)
-            if (sub.opt("error") != null && sub.opt("error") != JSONObject.NULL) {
+            if (sub.has("error") && sub.opt("error") != JSONObject.NULL) {
                 throw IllegalStateException("Subscribe rejected: ${sub.opt("error")}")
             }
             val result = sub.optJSONArray("result") ?: error("Invalid subscribe response")
