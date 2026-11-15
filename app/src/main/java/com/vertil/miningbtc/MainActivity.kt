@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.text.style.ForegroundColorSpan
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -88,6 +89,11 @@ class MainActivity : Activity() {
     private var benchRunning = false
     private var feedPaused = false
     private var feedRateHz = 30
+    private var configSaved = false
+    private var miningScreen = false
+    private var previousHashCount = 0L
+    private var previousHashTimeNs = 0L
+    private var smoothedFallbackRate = 0.0
     private var latestStats: MinerStats? = null
     private val renderedFeedStatuses = LinkedHashMap<String, String>()
 
@@ -118,92 +124,57 @@ class MainActivity : Activity() {
     private val statsListener: (MinerStats) -> Unit = { stats ->
         runOnUiThread {
             latestStats = stats
-            rate.text = formatRate(stats.hashrate)
-            hashes.text = "Hashes (sesión): " + String.format(Locale.US, "%,d", stats.totalHashes)
-            totalHashesLabel.text = "Hashes totales (acumulados): " + String.format(Locale.US, "%,d", stats.totalHashes)
-            accepted.text = "Accepted: " + stats.accepted
-            rejected.text = "Rejected: " + stats.rejected
-            status.text = "● " + stats.state.uppercase(Locale.US)
-            status.setTextColor(
-                when (stats.state) {
+            val nowNs = SystemClock.elapsedRealtimeNanos()
+            val deltaHashes = stats.totalHashes - previousHashCount
+            val deltaNs = nowNs - previousHashTimeNs
+            if (deltaHashes > 0 && deltaNs > 0 && stats.hashrate <= 0.0) {
+                val measured = deltaHashes * 1_000_000_000.0 / deltaNs
+                smoothedFallbackRate = if (smoothedFallbackRate <= 0.0) measured else smoothedFallbackRate * 0.65 + measured * 0.35
+            }
+            previousHashCount = stats.totalHashes
+            previousHashTimeNs = nowNs
+            val visibleRate = if (stats.hashrate > 0.0) stats.hashrate else smoothedFallbackRate
+            if (miningScreen) {
+                rate.text = formatRate(visibleRate)
+                bestShareDiff.text = if (stats.bestShareBits > 0) "BEST ${stats.bestShareBits}b / ${formatDifficulty(stats.bestShareDifficulty)}" else "BEST —"
+                bestShareBits.text = if (stats.bitsMissing >= 0) "NET −${stats.bitsMissing}b" else "NET —"
+                accepted.text = "S ${stats.accepted}/${stats.rejected}"
+                rejected.text = "CPU ${if (stats.cpuTempC > 0) "%.1f°".format(Locale.US, stats.cpuTempC) else "—"}"
+                status.text = if (stats.state == "Mining") "● ONLINE" else "● " + stats.state.uppercase(Locale.US)
+                status.setTextColor(when (stats.state) {
                     "Mining" -> green
-                    "Stopped", "Disconnected", "Error" -> red
                     "Throttled" -> yellow
-                    else -> white
-                }
-            )
-            detail.text = stats.message +
-                " · Pool diff: " + stats.difficulty +
-                (if (stats.latencyMs >= 0) " · Latency: " + stats.latencyMs + " ms" else "") +
-                (if (stats.rejectionReason.isNotBlank()) " · Rejection: " + stats.rejectionReason else "") +
-                (if (stats.difficultySuggestion.isNotBlank()) " · Diff req: " + stats.difficultySuggestion else "") +
-                " · Submit: " + (if (stats.lastSubmitLatencyMs >= 0) "${stats.lastSubmitLatencyMs} ms" else "—") +
-                " · Obsoletos: " + stats.staleShares
-
-            bestShareDiff.text = "Dificultad equivalente: " + formatDifficulty(stats.bestShareDifficulty)
-            bestShareBits.text = "Bits cero: " + stats.bestShareBits + " / ~78 (red Bitcoin)"
-            bestShareHash.text = if (stats.bestShareHashHex.isNotBlank()) "Hash: " + stats.bestShareHashHex else "Hash: —"
-            bestShareTime.text = if (stats.bestShareTimestampMs > 0L)
-                "Nonce: %08x · Hora: %s".format(Locale.US, stats.bestShareNonce, SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(stats.bestShareTimestampMs)))
-            else "Nonce: — · Hora: —"
-            topHashesLabel.text = stats.topHashes.mapIndexed { index, entry ->
-                "%2d  %2db  %08x  %s".format(Locale.US, index + 1, entry.bits, entry.nonce, entry.hashHex)
-            }.joinToString("\n").ifBlank { "Esperando hashes…" }
-            if (!feedPaused) renderHashFeed(stats.hashFeed)
-
-            val temp = stats.cpuTempC
-            val threads = stats.effectiveThreads
-            thermalBar.text = "CPU: %.1f°C · batería: %.1f°C · hilos: %d/%d".format(Locale.US, temp, stats.batteryTempC, threads, 8)
-            thermalDetail.text = "Sensor CPU: ${stats.cpuSensorName} · PowerManager thermal status: ${thermalStatusName(stats.thermalStatus)}"
-            networkTargetLabel.text = if (stats.networkBitsHex.isNotBlank()) "Objetivo red: nBits ${stats.networkBitsHex} · dificultad ${formatDifficulty(stats.networkDifficulty)} · faltan ${stats.bitsMissing} bits" else "Objetivo red: esperando mining.notify"
-            thermalBar.setTextColor(
-                when {
-                    temp >= 85.0 -> red
-                    temp >= 75.0 -> yellow
-                    temp > 0.0 -> green
+                    "Stopped", "Disconnected", "Error" -> red
                     else -> muted
-                }
-            )
-
-            if (stats.state == "Stopped") {
-                startButton.isEnabled = true
-                stopButton.isEnabled = false
-            } else if (stats.state == "Mining" || stats.state == "Throttled" || stats.state == "Waiting for work") {
-                startButton.isEnabled = false
-                stopButton.isEnabled = true
+                })
+                thermalBar.text = "BAT %.1f° · %s".format(Locale.US, stats.batteryTempC, thermalStatusName(stats.thermalStatus))
+                networkTargetLabel.text = if (stats.networkBitsHex.isNotBlank()) "TARGET ${stats.networkBitsHex} · D ${formatDifficulty(stats.networkDifficulty)}" else "TARGET —"
+                if (!feedPaused) renderHashFeed(stats.hashFeed)
+            }
+            if (stats.state == "Stopped" || stats.state == "Error" || stats.state == "Disconnected") {
+                if (miningScreen) showConfigScreen()
             }
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+        override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = bg
         window.navigationBarColor = bg
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(20), dp(18), dp(26))
+            setPadding(dp(14), dp(10), dp(14), dp(8))
             setBackgroundColor(bg)
         }
-        root.addView(label("₿  POW LAB", 23f, white, true))
-        root.addView(label("VERTIL  /  SHA-256d PROOF OF WORK", 10f, muted, true).padBottom(16))
-
-        val selector = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        selector.addView(action("BENCHMARK LOCAL") { showMode(true) }, LinearLayout.LayoutParams(0, dp(48), 1f))
-        selector.addView(action("MINERÍA STRATUM") { showMode(false) }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
-        root.addView(selector)
-
         benchmarkPanel = buildBenchmark()
         stratumPanel = buildStratum()
-        root.addView(benchmarkPanel)
-        root.addView(stratumPanel)
-        showMode(true)
-        setContentView(ScrollView(this).apply { isFillViewport = true; addView(root) })
-
-        runSelfTest()
+        configSaved = getSharedPreferences("pool_config", MODE_PRIVATE).getBoolean("config_saved", false)
+        showConfigScreen()
+        setContentView(root)
         requestNotificationPermissionIfNeeded()
     }
 
-    override fun onStart() {
+        override fun onStart() {
         super.onStart()
         // Bind to the running service if it exists; this lets us pick up stats
         // after a screen rotation or app return without restarting the miner.
@@ -292,146 +263,169 @@ class MainActivity : Activity() {
     private fun buildStratum(): LinearLayout {
         val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val prefs = getSharedPreferences("pool_config", MODE_PRIVATE)
-        p.addView(label("STRATUM V1 · POOL SOLO MAINNET", 11f, muted, true).padTop(20))
-        p.addView(label(
-            "Recomendado: solo.ckpool.org:3333 (sin TLS). Wallet no-custodial (BlueWallet/Electrum/hardware). NUNCA uses una dirección de exchange.",
-            10f, yellow, false
-        ).padTop(6))
-        val c = card()
-        hostInput = field("Pool hostname", prefs.getString("host", "solo.ckpool.org") ?: "solo.ckpool.org")
-        portInput = field("Port", prefs.getString("port", "3333") ?: "3333", true)
-        // Keep the payout address separate from the Stratum username (wallet.worker).
-        // Migrate older installs whose only saved value was the composed username.
-        val savedWallet = WalletConfig.restoreWallet(
-            prefs.getString("wallet", null),
-            prefs.getString("user", null)
-        )
-        userInput = field("Wallet (Bech32 mainnet)", savedWallet)
-        workerNameInput = field("Worker name", prefs.getString("worker_name", "worker1") ?: "worker1")
-        passInput = field("Worker password", prefs.getString("pass", "x") ?: "x")
+        p.addView(label("CONFIGURACIÓN", 18f, white, true).padBottom(4))
+        p.addView(label("STRATUM SOLO · MAINNET", 9f, muted, true).padBottom(18))
+        hostInput = field("Host", prefs.getString("host", "solo.ckpool.org") ?: "solo.ckpool.org")
+        portInput = field("Puerto", prefs.getString("port", "3333") ?: "3333", true)
+        val savedWallet = WalletConfig.restoreWallet(prefs.getString("wallet", null), prefs.getString("user", null))
+        userInput = field("Wallet Bech32", savedWallet)
+        workerNameInput = field("Worker", prefs.getString("worker_name", "worker1") ?: "worker1")
+        passInput = field("Password", prefs.getString("pass", "x") ?: "x")
         tlsInput = CheckBox(this).apply {
-            text = "Use TLS"
-            setTextColor(white)
+            text = "TLS"; textSize = 12f; setTextColor(white)
             isChecked = prefs.getBoolean("tls", false)
+            buttonTintList = android.content.res.ColorStateList.valueOf(orange)
         }
-        for ((title, v) in listOf(
-            "POOL HOST" to hostInput,
-            "POOL PORT" to portInput,
-            "WALLET BECH32 (bc1…)" to userInput,
-            "WORKER NAME" to workerNameInput,
-            "POOL PASSWORD" to passInput
-        )) {
-            c.addView(label(title, 9f, muted, true))
-            c.addView(v)
+        listOf("HOST" to hostInput, "PUERTO" to portInput, "WALLET (BECH32)" to userInput,
+            "WORKER" to workerNameInput, "PASSWORD" to passInput).forEach { (title, input) ->
+            p.addView(label(title, 9f, muted, true).padTop(8))
+            p.addView(input)
         }
-        c.addView(tlsInput)
-        p.addView(c)
-
-        val s = card()
-        status = label("● DISCONNECTED", 12f, white, true)
-        s.addView(status)
-        detail = label("Configura pool y wallet.", 11f, muted, false).padTop(8)
-        s.addView(detail)
-        rate = label("0 H/s", 25f, white, true).padTop(12)
-        s.addView(rate)
-        hashes = label("Hashes (sesión): 0", 11f, muted, false)
-        s.addView(hashes)
-        totalHashesLabel = label("Hashes totales (acumulados): 0", 11f, muted, false)
-        s.addView(totalHashesLabel)
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        accepted = label("Accepted: 0", 11f, white, true)
-        rejected = label("Rejected: 0", 11f, white, true)
-        row.addView(accepted, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(rejected, LinearLayout.LayoutParams(0, -2, 1f))
-        s.addView(row)
-
-        // Telemetry: best share difficulty, leading zero bits, hash.
-        // These are the metrics that matter when solo mining: they tell you
-        // how close you got to a real mainnet block.
-        s.addView(label("MEJOR HASH DE TODOS LOS NONCES", 10f, orange, true).padTop(14))
-        bestShareDiff = label("Best share diff: 0", 12f, white, true)
-        s.addView(bestShareDiff)
-        bestShareBits = label("Bits cero: 0 / ~78 (red Bitcoin)", 10f, muted, false)
-        s.addView(bestShareBits)
-        bestShareHash = label("Hash: —", 9f, muted, false).apply { typeface = Typeface.MONOSPACE }
-        s.addView(bestShareHash)
-        bestShareTime = label("Nonce: — · Hora: —", 10f, muted, false)
-        s.addView(bestShareTime)
-        networkTargetLabel = label("Objetivo red: esperando mining.notify", 10f, yellow, false).padTop(8)
-        s.addView(networkTargetLabel)
-
-        // Thermal + thread indicator
-        thermalBar = label("CPU: 0.0°C · batería: 0.0°C · hilos: 0/8", 11f, muted, true).padTop(12)
-        s.addView(thermalBar)
-        thermalDetail = label("Sensor CPU: — · PowerManager thermal status: —", 9f, muted, false)
-        s.addView(thermalDetail)
-        s.addView(label("TOP 10 MEJORES HASHES · MUESTRA EN VIVO", 10f, orange, true).padTop(14))
-        topHashesLabel = label("Esperando hashes…", 9f, muted, false).apply { typeface = Typeface.MONOSPACE }
-        s.addView(topHashesLabel)
-        s.addView(label("HASH FEED EN VIVO · MÁXIMO 200 FILAS", 10f, orange, true).padTop(14))
-        hashFeedView = label("Esperando hashes nativos…", 9f, muted, false).apply {
-            typeface = Typeface.MONOSPACE
-            maxLines = 200
-            setHorizontallyScrolling(true)
-        }
-        feedScroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(-1, dp(240))
-            isFillViewport = false
-            addView(hashFeedView)
-            background = rounded(bg, 8)
-        }
-        s.addView(feedScroll)
-        val feedControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        feedControls.addView(action("10/s") { setFeedRate(10) }, LinearLayout.LayoutParams(0, dp(40), 1f))
-        feedControls.addView(action("30/s") { setFeedRate(30) }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(4) })
-        feedControls.addView(action("60/s") { setFeedRate(60) }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(4) })
-        s.addView(feedControls)
-        val feedActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        feedActions.addView(action("PAUSAR / REANUDAR") {
-            feedPaused = !feedPaused
-            if (!feedPaused) {
-                renderedFeedStatuses.clear()
-                hashFeedView.text = ""
-                latestStats?.let { renderHashFeed(it.hashFeed) }
-            }
-        }, LinearLayout.LayoutParams(0, dp(42), 1f))
-        feedActions.addView(action("EXPORTAR CSV") { exportMiningCsv() }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(6) })
-        s.addView(feedActions)
-        p.addView(s)
-
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        startButton = action("START MINING") { startMining() }
-        stopButton = action("STOP") { stopMining() }
-        stopButton.isEnabled = false
-        actions.addView(startButton, LinearLayout.LayoutParams(0, dp(48), 1f))
-        actions.addView(stopButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
-        p.addView(actions)
-        p.addView(action("EXPORTAR ESTADÍSTICAS (JSON)") { exportStatsJson() })
-        p.addView(action("IMPORTAR ESTADÍSTICAS (JSON)") { importStatsJson() })
-        p.addView(action("REINICIAR ESTADÍSTICAS") {
-            android.app.AlertDialog.Builder(this)
-                .setTitle("Reiniciar estadísticas")
-                .setMessage("Se borrarán el mejor hash, hashes acumulados y shares aceptados/rechazados. La configuración del pool y la wallet se conservarán.")
-                .setNegativeButton("Cancelar", null)
-                .setPositiveButton("Reiniciar") { _, _ ->
-                    try {
-                        (service ?: error("Servicio no disponible")).resetStatistics()
-                        toast("Estadísticas reiniciadas")
-                    } catch (e: Exception) { toast("No se pudo reiniciar: ${e.message}") }
-                }.show()
+        p.addView(tlsInput)
+        val error = label("", 10f, red, false).apply { tag = "config_error" }
+        p.addView(error)
+        p.addView(action("GUARDAR") { savePoolConfiguration(error) }.apply {
+            tag = "save_config"; background = rounded(bg, 8); setTextColor(orange)
         })
-        p.addView(action("SIMULAR ALERTA DE BLOQUE (TARGET FALSO)") {
-            service?.simulateBlockAlert() ?: toast("Servicio todavía no está enlazado")
+        startButton = action("EMPEZAR MINERÍA") { startMining() }.apply {
+            visibility = if (configSaved) View.VISIBLE else View.GONE
+            background = rounded(orange, 8); setTextColor(Color.BLACK)
+            layoutParams = LinearLayout.LayoutParams(-1, dp(54)).apply { topMargin = dp(28) }
+        }
+        p.addView(startButton)
+        p.addView(action("AJUSTES") { showSettingsMenu() }.apply {
+            background = rounded(panel, 8); setTextColor(muted)
+            layoutParams = LinearLayout.LayoutParams(-1, dp(38)).apply { topMargin = dp(12) }
         })
+        status = label("● CONECTANDO", 9f, green, true)
+        rate = label("0.00 H/s", 25f, white, true)
+        bestShareDiff = label("BEST —", 9f, orange, true)
+        bestShareBits = label("NET —", 9f, muted, true)
+        accepted = label("S 0/0", 9f, green, true)
+        rejected = label("CPU —", 9f, muted, true)
+        thermalBar = label("BAT — · NORMAL", 8f, muted, false)
+        networkTargetLabel = label("TARGET —", 8f, muted, false)
+        detail = label("", 8f, muted, false); hashes = label("", 8f, muted, false)
+        totalHashesLabel = label("", 8f, muted, false); bestShareHash = label("", 8f, muted, false)
+        bestShareTime = label("", 8f, muted, false); thermalDetail = label("", 8f, muted, false)
+        topHashesLabel = label("", 8f, muted, false)
+        hashFeedView = label("Esperando muestra en vivo…", 9f, red, false).apply {
+            typeface = Typeface.MONOSPACE; maxLines = 200; setHorizontallyScrolling(true)
+            setPadding(0, dp(5), 0, dp(5))
+        }
+        feedScroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(hashFeedView) }
+        stopButton = action("DETENER") { stopMining() }.apply {
+            background = rounded(bg, 7); setTextColor(red)
+            layoutParams = LinearLayout.LayoutParams(dp(104), dp(34)).apply { topMargin = dp(5) }
+        }
         return p
     }
 
-    private fun showMode(local: Boolean) {
+    private fun savePoolConfiguration(errorView: TextView) {
+        val host = hostInput.text.toString().trim()
+        val port = portInput.text.toString().trim().toIntOrNull()
+        val wallet = userInput.text.toString().trim()
+        val worker = workerNameInput.text.toString().trim()
+        val password = passInput.text.toString()
+        val error = when {
+            host.isBlank() || host.any { it.isWhitespace() } -> "Host inválido."
+            port == null || port !in 1..65535 -> "Puerto inválido: rango 1–65535."
+            !WalletConfig.isValidPayoutAddress(wallet) -> "Wallet inválida. Se requiere Bech32/Bech32m mainnet (bc1…)."
+            worker.isBlank() || worker.any { it.isWhitespace() } -> "Worker inválido."
+            password.isBlank() -> "Password no puede estar vacío."
+            else -> ""
+        }
+        if (error.isNotEmpty()) { errorView.text = error; return }
+        getSharedPreferences("pool_config", MODE_PRIVATE).edit()
+            .putString("host", host).putString("port", port.toString())
+            .putString("wallet", wallet).putString("user", WalletConfig.stratumUsername(wallet, worker))
+            .putString("worker_name", worker).putString("pass", password)
+            .putBoolean("tls", tlsInput.isChecked).putBoolean("config_saved", true).apply()
+        configSaved = true
+        listOf(hostInput, portInput, userInput, workerNameInput, passInput, tlsInput, errorView)
+            .forEach { it.visibility = View.GONE }
+        stratumPanel.findViewWithTag<View>("save_config")?.visibility = View.GONE
+        startButton.visibility = View.VISIBLE
+    }
+
+    private fun showConfigScreen() {
+        miningScreen = false
+        root.removeAllViews()
+        root.addView(stratumPanel, LinearLayout.LayoutParams(-1, -1))
+        startButton.visibility = if (configSaved) View.VISIBLE else View.GONE
+        if (configSaved) {
+            listOf(hostInput, portInput, userInput, workerNameInput, passInput, tlsInput).forEach { it.visibility = View.GONE }
+            stratumPanel.findViewWithTag<View>("save_config")?.visibility = View.GONE
+        }
+    }
+
+    private fun showMiningScreen() {
+        miningScreen = true
+        feedRateHz = 30
+        service?.setHashFeedRate(30)
+        root.removeAllViews()
+        val metrics = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(rate, LinearLayout.LayoutParams(0, -2, 1.2f))
+                addView(status, LinearLayout.LayoutParams(0, -2, 1f))
+            })
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(bestShareDiff, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(bestShareBits, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(accepted, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(rejected, LinearLayout.LayoutParams(0, -2, 1f))
+            })
+            addView(thermalBar); addView(networkTargetLabel)
+            setPadding(0, 0, 0, dp(6))
+        }
+        root.addView(metrics, LinearLayout.LayoutParams(-1, -2))
+        root.addView(label("MUESTRA EN VIVO", 8f, muted, true))
+        root.addView(feedScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(LinearLayout(this).apply { gravity = Gravity.END; addView(stopButton) }, LinearLayout.LayoutParams(-1, -2))
+        latestStats?.let { rate.text = formatRate(if (it.hashrate > 0) it.hashrate else smoothedFallbackRate); renderHashFeed(it.hashFeed) }
+    }
+
+    private fun showSettingsMenu() {
+        val items = arrayOf("Benchmark local", "Exportar CSV y registros", "Exportar estadísticas JSON",
+            "Importar estadísticas JSON", "Simular alerta de bloque", "Depuración")
+        android.app.AlertDialog.Builder(this).setTitle("AJUSTES").setItems(items) { _, which ->
+            when (which) {
+                0 -> { root.removeAllViews(); root.addView(benchmarkPanel); root.addView(action("VOLVER") { showConfigScreen() }) }
+                1 -> exportMiningCsv()
+                2 -> exportStatsJson()
+                3 -> importStatsJson()
+                4 -> service?.simulateBlockAlert() ?: toast("Servicio no disponible")
+                5 -> showDebugLog()
+            }
+        }.show()
+    }
+
+    private fun showDebugLog() {
+        val stats = latestStats
+        val content = buildString {
+            append("Estado: ").append(stats?.state ?: "Idle").append('\n')
+            append("Mensaje: ").append(stats?.message ?: "—").append('\n')
+            append("Pool difficulty: ").append(stats?.difficulty ?: 0.0).append('\n')
+            append("Diff req: ").append(stats?.difficultySuggestion ?: "—").append('\n')
+            append("Submit latency: ").append(stats?.lastSubmitLatencyMs ?: -1).append(" ms\n")
+            append("Stale shares: ").append(stats?.staleShares ?: 0).append('\n')
+            append("CPU sensor: ").append(stats?.cpuSensorName ?: "—").append('\n')
+            append("Thermal status: ").append(stats?.thermalStatus ?: -1).append('\n')
+            append("Target: ").append(stats?.networkBitsHex ?: "—").append('\n')
+            append("nBits difficulty: ").append(stats?.networkDifficulty ?: 0.0)
+        }
+        android.app.AlertDialog.Builder(this).setTitle("LOG DE DEPURACIÓN").setMessage(content).setPositiveButton("Cerrar", null).show()
+    }
+
+        private fun showMode(local: Boolean) {
         benchmarkPanel.visibility = if (local) View.VISIBLE else View.GONE
         stratumPanel.visibility = if (local) View.GONE else View.VISIBLE
     }
 
-    private fun runSelfTest() {
+        private fun runSelfTest() {
         executor.execute {
             try {
                 val report = NativePowEngine.nativeSelfTest()
@@ -521,56 +515,15 @@ class MainActivity : Activity() {
     }
 
     private fun startMining() {
-        val host = hostInput.text.toString().trim()
-        val port = portInput.text.toString().trim().toIntOrNull()
-        val wallet = userInput.text.toString().trim()
-        val worker = workerNameInput.text.toString().trim()
-        val pass = passInput.text.toString()
-        val tls = tlsInput.isChecked
-
-        if (host.isBlank() || port == null || port !in 1..65535) {
-            toast("Pool host/port inválidos")
-            return
-        }
-        if (wallet.isBlank()) {
-            toast("Falta la wallet Bech32")
-            return
-        }
-        // Bech32 / Bech32m validation: a malformed wallet means any block
-        // reward would go to a stranger. Do not allow START on bad input.
-        if (!WalletConfig.isValidPayoutAddress(wallet)) {
-            toast("Wallet no es Bech32/Bech32m válida en mainnet (bc1…)")
-            return
-        }
-        val user = WalletConfig.stratumUsername(wallet, worker)
-        getSharedPreferences("pool_config", MODE_PRIVATE).edit()
-            .putString("host", host)
-            .putString("port", port.toString())
-            .putString("wallet", wallet)
-            .putString("user", user)
-            .putString("worker_name", worker)
-            .putString("pass", pass)
-            .putBoolean("tls", tls)
-            .apply()
-
-        // Foreground service keeps the miner alive when the screen is off
-        // and under Doze. This is the difference between "mines for 5 min"
-        // and "mines 24/7".
+        if (!configSaved) { toast("Primero guarda y valida la configuración."); return }
         val intent = Intent(this, MiningService::class.java).setAction(MiningService.ACTION_START)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
-        // Bind so the Activity receives stats callbacks.
-        bindService(Intent(this, MiningService::class.java), connection, Context.BIND_AUTO_CREATE)
-        startButton.isEnabled = false
-        stopButton.isEnabled = true
-        status.text = "● STARTING"
-        status.setTextColor(yellow)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+        if (!bound) bindService(Intent(this, MiningService::class.java), connection, Context.BIND_AUTO_CREATE)
+        showMiningScreen()
+        status.text = "● CONECTANDO"; status.setTextColor(yellow)
     }
 
-    private fun stopMining() {
+        private fun stopMining() {
         val intent = Intent(this, MiningService::class.java).setAction(MiningService.ACTION_STOP)
         startService(intent)
         startButton.isEnabled = true
@@ -640,39 +593,32 @@ class MainActivity : Activity() {
             val key = "${entry.timestampMs}:${entry.nonce}"
             renderedFeedStatuses.containsKey(key) && renderedFeedStatuses[key] != entry.status
         }
-        if (changedStatus) {
-            renderedFeedStatuses.clear()
-            hashFeedView.text = ""
-        }
+        if (changedStatus) { renderedFeedStatuses.clear(); hashFeedView.text = "" }
         val out = SpannableStringBuilder(hashFeedView.text)
         for (entry in entries) {
             val key = "${entry.timestampMs}:${entry.nonce}"
             if (renderedFeedStatuses.containsKey(key)) continue
             val time = SimpleDateFormat("HH:mm:ss.SS", Locale.US).format(Date(entry.timestampMs))
-            val line = "%s  %08x  %2db  %s  %s\n".format(Locale.US, time, entry.nonce, entry.bits, entry.hashHex, entry.status)
-            val start = out.length
-            out.append(line)
+            val line = "%s  %08x  %2db  %s\n".format(Locale.US, time, entry.nonce, entry.bits, entry.hashHex)
+            val start = out.length; out.append(line)
             val color = when (entry.status) {
                 "accepted" -> green
-                "rejected" -> red
-                "threshold", "pending", "block" -> orange
-                else -> muted
+                "threshold", "pending" -> orange
+                "block" -> yellow
+                else -> red
             }
             out.setSpan(ForegroundColorSpan(color), start, out.length, SpannableStringBuilder.SPAN_EXCLUSIVE_EXCLUSIVE)
             renderedFeedStatuses[key] = entry.status
         }
         while (out.count { it == '\n' } > 200) {
-            val firstBreak = out.indexOf("\n")
-            if (firstBreak < 0) break
-            out.delete(0, firstBreak + 1)
-            val firstKey = renderedFeedStatuses.keys.firstOrNull() ?: break
-            renderedFeedStatuses.remove(firstKey)
+            val firstBreak = out.indexOf("\n"); if (firstBreak < 0) break
+            out.delete(0, firstBreak + 1); renderedFeedStatuses.keys.firstOrNull()?.let { renderedFeedStatuses.remove(it) }
         }
         hashFeedView.text = out
         feedScroll.post { feedScroll.fullScroll(View.FOCUS_DOWN) }
     }
 
-    private fun thermalStatusName(status: Int): String = when (status) {
+        private fun thermalStatusName(status: Int): String = when (status) {
         0 -> "NONE"; 1 -> "LIGHT"; 2 -> "MODERATE"; 3 -> "SEVERE"
         4 -> "CRITICAL"; 5 -> "EMERGENCY"; 6 -> "SHUTDOWN"; else -> "UNAVAILABLE"
     }
