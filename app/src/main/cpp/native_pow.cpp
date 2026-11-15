@@ -10,7 +10,6 @@
 #include <string>
 #include "nonce_scheduler.h"
 #include "pow_sha256.h"
-#include "nonce_scheduler.h"
 using namespace powlab;
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_vertil_miningbtc_NativePowEngine_nativeCapabilities(JNIEnv* env,jclass) {
@@ -31,7 +30,7 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeHashHeader(JNIEnv* env,jclass,jb
  jbyteArray out=env->NewByteArray(32);env->SetByteArrayRegion(out,0,32,reinterpret_cast<const jbyte*>(d.data()));return out;
 }
 extern "C" JNIEXPORT jlongArray JNICALL
-Java_com_vertil_miningbtc_NativePowEngine_nativeBenchmark(JNIEnv* env,jclass,jbyteArray input,jlong duration,jint requested,jboolean arm) {
+Java_com_vertil_miningbtc_NativePowEngine_nativeBenchmark(JNIEnv* env,jclass,jbyteArray input,jlong duration,jint requested,jboolean arm,jint affinityMode) {
  if(env->GetArrayLength(input)!=80 || duration<=0)return nullptr;
  jbyte raw[80];env->GetByteArrayRegion(input,0,80,raw);
  uint8_t header[80];for(int i=0;i<80;i++)header[i]=uint8_t(raw[i]);
