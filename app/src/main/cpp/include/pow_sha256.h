@@ -20,6 +20,9 @@ bool digest_meets_target_early(const Digest& digest, const Digest& target);
 bool digest_meets_stratum_target(const Digest& digest, const Digest& target);
 struct FeedSample { uint32_t nonce; Digest digest; };
 struct ScanResult { uint64_t hashes; std::vector<uint32_t> shares; std::vector<uint32_t> blocks; uint32_t best_nonce; Digest best_digest; bool has_best; std::vector<FeedSample> feed; };
+struct BestHashSnapshot { uint32_t nonce; Digest digest; bool has_best; };
+void record_best_hash(const ScanResult& scan);
+BestHashSnapshot get_best_hash();
 ScanResult scan_nonce_batch(const uint8_t header[80], uint32_t start, uint32_t count, unsigned threads, bool use_arm, const Digest& target, const Digest& block_target);
 std::string self_test_report();
 }
