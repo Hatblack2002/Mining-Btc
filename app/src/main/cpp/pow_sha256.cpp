@@ -56,24 +56,17 @@ static std::string hex(const uint8_t* p,size_t n) {
  for(size_t i=0;i<n;i++)s<<std::setw(2)<<unsigned(p[i]);return s.str();
 }
 std::string self_test_report() {
- // Bitcoin genesis block header, serialized in wire order.
  const std::string h="01000000" "0000000000000000000000000000000000000000000000000000000000000000"
  "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a"
  "29ab5f49" "ffff001d" "1dac2b7c";
  uint8_t header[80];for(int i=0;i<80;i++)header[i]=uint8_t(std::stoul(h.substr(i*2,2),nullptr,16));
- Midstate m=make_midstate(header,false);Digest d=hash_header_nonce(header,2083236893u,m,false);
+ Midstate mp=make_midstate(header,false);Digest dp=hash_header_nonce(header,2083236893u,mp,false);
  const std::string expected="6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000";
- bool genesis=hex(d.data(),32)==expected;
- bool parity=true;
- if(arm_sha2_available()) {
-  Midstate ma=make_midstate(header,true);Digest da=hash_header_nonce(header,2083236893u,ma,true);
-  parity=(ma==m && da==d);
- }
- std::ostringstream out;
- out<<"genesis_hash="<<(genesis?"PASS":"FAIL")<<" expected="<<expected<<" actual="<<hex(d.data(),32)
- <<" nonce_2083236893="<<(genesis?"PASS":"FAIL")
- <<" arm_sha2_available="<<(arm_sha2_available()?"true":"false")
- <<" arm_vs_portable="<<(parity?"PASS":"NOT_RUN_NO_ARM_SHA2");
+ bool genesis=hex(dp.data(),32)==expected; bool parity=false; std::string armHash="NOT_AVAILABLE";
+ if(arm_sha2_available()){Midstate ma=make_midstate(header,true);Digest da=hash_header_nonce(header,2083236893u,ma,true);armHash=hex(da.data(),32);parity=(ma==mp&&da==dp);}
+ std::ostringstream out;out<<"genesis_portable="<<(genesis?"OK":"FAIL")<<" hash="<<hex(dp.data(),32)<<" nonce=2083236893"
+ <<" arm_sha2_available="<<(arm_sha2_available()?"true":"false")<<" genesis_arm="<<(arm_sha2_available()?(parity?"OK":"FAIL"):"NOT_AVAILABLE")
+ <<" arm_hash="<<armHash<<" portable_hash="<<hex(dp.data(),32)<<" arm_vs_portable="<<(arm_sha2_available()?(parity?"OK":"FAIL"):"NOT_AVAILABLE");
  return out.str();
 }
 }
