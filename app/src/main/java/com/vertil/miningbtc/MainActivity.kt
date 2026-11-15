@@ -71,6 +71,7 @@ class MainActivity : Activity() {
     private lateinit var topHashesLabel: TextView
     private lateinit var hashFeedView: TextView
     private lateinit var thermalDetail: TextView
+    private lateinit var networkTargetLabel: TextView
     private lateinit var thermalBar: TextView
     private lateinit var totalHashesLabel: TextView
     private lateinit var startButton: Button
@@ -96,6 +97,7 @@ class MainActivity : Activity() {
             val s = (binder as? MiningService.LocalBinder)?.service() ?: return
             service = s
             bound = true
+            s.setHashFeedRate(feedRateHz)
             s.registerListener(statsListener)
         }
 
@@ -144,6 +146,7 @@ class MainActivity : Activity() {
             val threads = stats.effectiveThreads
             thermalBar.text = "CPU: %.1f°C · batería: %.1f°C · hilos: %d/%d".format(Locale.US, temp, stats.batteryTempC, threads, 8)
             thermalDetail.text = "Sensor CPU: ${stats.cpuSensorName} · PowerManager thermal status: ${thermalStatusName(stats.thermalStatus)}"
+            networkTargetLabel.text = if (stats.networkBitsHex.isNotBlank()) "Objetivo red: nBits ${stats.networkBitsHex} · dificultad ${formatDifficulty(stats.networkDifficulty)} · faltan ${stats.bitsMissing} bits" else "Objetivo red: esperando mining.notify"
             thermalBar.setTextColor(
                 when {
                     temp >= 85.0 -> red
@@ -316,6 +319,8 @@ class MainActivity : Activity() {
         s.addView(bestShareHash)
         bestShareTime = label("Nonce: — · Hora: —", 10f, muted, false)
         s.addView(bestShareTime)
+        networkTargetLabel = label("Objetivo red: esperando mining.notify", 10f, yellow, false).padTop(8)
+        s.addView(networkTargetLabel)
 
         // Thermal + thread indicator
         thermalBar = label("CPU: 0.0°C · batería: 0.0°C · hilos: 0/8", 11f, muted, true).padTop(12)
@@ -349,6 +354,9 @@ class MainActivity : Activity() {
         actions.addView(startButton, LinearLayout.LayoutParams(0, dp(48), 1f))
         actions.addView(stopButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
         p.addView(actions)
+        p.addView(action("SIMULAR ALERTA DE BLOQUE (TARGET FALSO)") {
+            service?.simulateBlockAlert() ?: toast("Servicio todavía no está enlazado")
+        })
         return p
     }
 
