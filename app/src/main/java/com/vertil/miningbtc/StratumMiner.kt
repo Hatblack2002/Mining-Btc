@@ -50,6 +50,7 @@ data class MinerStats(
     val bestShareDifficulty: Double = 0.0,
     val bestShareBits: Int = 0,
     val bestShareHashHex: String = "",
+    val bestShareTimestampMs: Long = 0L,
     val cpuTempC: Double = 0.0,
     val effectiveThreads: Int = 0
 )
@@ -95,6 +96,7 @@ class StratumMiner(
     @Volatile private var bestShareDifficulty = initialStats.bestShareDifficulty
     @Volatile private var bestShareBits = initialStats.bestShareBits
     @Volatile private var bestShareHashHex = initialStats.bestShareHashHex
+    @Volatile private var bestShareTimestampMs = initialStats.bestShareTimestampMs
     @Volatile private var rejectionReason = ""
     @Volatile private var lastMessage = "Connecting"
     @Volatile private var difficultySuggestionStatus = "Not sent"
@@ -333,10 +335,12 @@ class StratumMiner(
                     val batchCount = minOf(nativeBatchSize.toLong(), remaining).toInt()
                     var scanTarget = targetRef.get()
                     var scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, threads, useArm, scanTarget)
+                    updateBestFromNativeBatch(scan)
                     var actualScanned = scan.getOrElse(0) { 0L }
                     while (targetRef.get() !== scanTarget && jobRef.get() === activeJob) {
                         scanTarget = targetRef.get()
                         scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, threads, useArm, scanTarget)
+                        updateBestFromNativeBatch(scan)
                         actualScanned += scan.getOrElse(0) { 0L }
                     }
                     val scanned = scan.getOrElse(0) { 0L }
@@ -484,6 +488,32 @@ class StratumMiner(
         }
     }
 
+    /** Consume the per-batch best hash returned by native workers; no per-hash JNI callbacks. */
+    private fun updateBestFromNativeBatch(scan: LongArray) {
+        val count = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
+        val base = count + 2
+        val nonce = scan.getOrElse(base) { -1L }
+        if (nonce < 0L) return
+        val digest = ByteArray(32)
+        for (word in 0 until 8) {
+            val value = scan.getOrElse(base + 1 + word) { 0L }.toInt()
+            val offset = word * 4
+            digest[offset] = (value ushr 24).toByte()
+            digest[offset + 1] = (value ushr 16).toByte()
+            digest[offset + 2] = (value ushr 8).toByte()
+            digest[offset + 3] = value.toByte()
+        }
+        val candidateDifficulty = computeDifficulty(digest)
+        if (candidateDifficulty > bestShareDifficulty) {
+            bestShareDifficulty = candidateDifficulty
+            bestShareBits = leadingZeroBits(digest)
+            bestShareHashHex = toHex(digest.reversedArray())
+            bestShareTimestampMs = System.currentTimeMillis()
+            lastMessage = "NEW BEST HASH · %.3e diff · %d leading bits · nonce %08x"
+                .format(Locale.US, candidateDifficulty, bestShareBits, nonce)
+        }
+    }
+
     private fun emit(state: String, rate: Double = 0.0) {
         onStats(
             MinerStats(
@@ -500,6 +530,7 @@ class StratumMiner(
                 bestShareDifficulty = bestShareDifficulty,
                 bestShareBits = bestShareBits,
                 bestShareHashHex = bestShareHashHex,
+                bestShareTimestampMs = bestShareTimestampMs,
                 cpuTempC = cpuTempC.get(),
                 effectiveThreads = effectiveThreads.get()
             )
@@ -559,13 +590,12 @@ class StratumMiner(
     }
 
     /** Leading zero bits of the hash in big-endian display order. */
+    /** Leading zero bits of the displayed Bitcoin hash (reverse of raw SHA digest). */
     private fun leadingZeroBits(hash: ByteArray): Int {
         var bits = 0
-        for (i in 0 until 32) {
+        for (i in 31 downTo 0) {
             val b = hash[i].toInt() and 0xff
-            if (b == 0) {
-                bits += 8
-            } else {
+            if (b == 0) bits += 8 else {
                 bits += Integer.numberOfLeadingZeros(b) - 24
                 break
             }
