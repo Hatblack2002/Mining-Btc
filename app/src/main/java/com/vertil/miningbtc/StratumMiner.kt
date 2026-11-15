@@ -376,7 +376,7 @@ class StratumMiner(
                     val remaining = 0x1_0000_0000L - nonce
                     val batchCount = minOf(nativeBatchSize.toLong(), remaining).toInt()
                     var scanTarget = targetRef.get()
-                    var scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, threads, useArm, scanTarget)
+                    var scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, threads, useArm, scanTarget, networkTargetRef.get())
                     updateBestFromNativeBatch(scan)
                     var actualScanned = scan.getOrElse(0) { 0L }
                     while (targetRef.get() !== scanTarget && jobRef.get() === activeJob) {
@@ -431,6 +431,29 @@ class StratumMiner(
                             lastMessage = "BLOCK FOUND · network target met · nonce $nonceHex"
                             onBlockFound(blockRecord)
                         }
+                    }
+                    // Network-target hits are tracked independently of pool share difficulty.
+                    val blockCountIndex = shareCount + 2
+                    val blockCount = scan.getOrElse(blockCountIndex) { 0L }.toInt().coerceIn(0, 1024)
+                    for (blockIndex in 0 until blockCount) {
+                        val blockNonce = scan.getOrElse(blockCountIndex + 1 + blockIndex) { -1L }
+                        if (blockNonce < 0L || !reportedBlockNonces.add(blockNonce)) continue
+                        val blockHash = NativePowEngine.nativeHashHeader(header, blockNonce, useArm)
+                        val blockHeader = header.copyOf()
+                        blockHeader[76] = blockNonce.toByte()
+                        blockHeader[77] = (blockNonce ushr 8).toByte()
+                        blockHeader[78] = (blockNonce ushr 16).toByte()
+                        blockHeader[79] = (blockNonce ushr 24).toByte()
+                        val record = BlockFoundRecord(blockHeader, toHex(blockHash.reversedArray()),
+                            blockNonce, System.currentTimeMillis(), job.nbits, networkDifficulty)
+                        val blockId = requestId.incrementAndGet()
+                        val blockNonceHex = String.format(Locale.US, "%08x", blockNonce)
+                        val blockParams = JSONArray().put(config.username).put(job.id).put(currentExtra).put(job.ntime).put(blockNonceHex)
+                        submitIds[blockId] = blockNonce
+                        addFeedEntry(blockNonce, blockHash, "block")
+                        send(JSONObject().put("id", blockId).put("method", "mining.submit").put("params", blockParams))
+                        lastMessage = "BLOCK FOUND · network target met · nonce $blockNonceHex"
+                        onBlockFound(record)
                     }
                     val now = System.nanoTime()
                     if (now - lastRateAt >= 1_000_000_000L) {
@@ -558,10 +581,12 @@ class StratumMiner(
     /** Consume best-hash and sampled feed data returned once per native batch. */
     private fun updateBestFromNativeBatch(scan: LongArray) {
         val shareCount = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
-        val base = shareCount + 2
-        val nonce = scan.getOrElse(base) { -1L }
+        val blockCountIndex = shareCount + 2
+        val blockCount = scan.getOrElse(blockCountIndex) { 0L }.toInt().coerceIn(0, 1024)
+        val bestIndex = blockCountIndex + 1 + blockCount
+        val nonce = scan.getOrElse(bestIndex) { -1L }
         if (nonce >= 0L) {
-            val digest = digestFromWords(scan, base + 1)
+            val digest = digestFromWords(scan, bestIndex + 1)
             val candidateDifficulty = computeDifficulty(digest)
             if (candidateDifficulty > bestShareDifficulty) {
                 bestShareDifficulty = candidateDifficulty
@@ -573,7 +598,7 @@ class StratumMiner(
                     .format(Locale.US, candidateDifficulty, bestShareBits, nonce)
             }
         }
-        val feedCountIndex = base + 9
+        val feedCountIndex = bestIndex + 9
         val feedCount = scan.getOrElse(feedCountIndex) { 0L }.toInt().coerceIn(0, 4096)
         var index = feedCountIndex + 1
         synchronized(feedLock) {
