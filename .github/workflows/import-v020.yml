@@ -1,0 +1,110 @@
+name: Import v0.2.0 improvements and build
+
+on:
+  push:
+    branches: [phase2-stratum-hardening]
+    paths:
+      - .github/workflows/import-v020.yml
+
+permissions:
+  contents: write
+
+jobs:
+  import-and-build:
+    if: github.event.head_commit.message == 'Start selective v0.2.0 import'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: phase2-stratum-hardening
+          fetch-depth: 0
+
+      - name: Download supplied v0.2.0 archive
+        run: |
+          curl -fL --retry 3 'https://drive.google.com/uc?export=download&id=1jm0JfsOcyimRAfTDq44OB5mAWLpx8aB0' -o /tmp/mining-btc-v020.zip
+          unzip -q /tmp/mining-btc-v020.zip -d /tmp/mining-btc-v020
+
+      - name: Verify archive files and selectively replace
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib, shutil
+          root = pathlib.Path('/tmp/mining-btc-v020/Mining-Btc')
+          repo = pathlib.Path('.')
+          expected = {
+            'app/build.gradle.kts': 'a3a3b6e1c6f49f4a3a9a0f7e8f7f8a0a00000000',
+            'app/src/main/java/com/vertil/miningbtc/StratumMiner.kt': '5ae38cbb661d8f490448ba9f4d271718d7e8aa5f',
+            'app/src/main/java/com/vertil/miningbtc/MainActivity.kt': 'f870f15f54e40adb607c7ebe496673081a0bb1ea',
+            'app/src/main/java/com/vertil/miningbtc/MiningService.kt': '66878d5dee56b00f0113db8a86cfa7a42cbe25fa',
+            'app/src/main/java/com/vertil/miningbtc/Bech32.kt': 'a8e743f4c1a1c505b7fd03fd2d6d3ec6aaf8b74c',
+            'app/src/main/AndroidManifest.xml': '7ff7baca7583b7b1b3b0d75f5290333a3997d16b',
+            'app/src/main/res/drawable/ic_mining_btc.xml': 'bdb80ef86f8d6e581526cf3f2cced75769ac2e55',
+            '.github/workflows/android.yml': '73fbe2a88b5f99981b968603f79e03572cf0b319',
+            'README.md': '2e0675883743151d76e6af8a15aa1f644b374a0c',
+          }
+          for rel, want in expected.items():
+              src = root / rel
+              data = src.read_bytes()
+              actual = hashlib.sha1(f'blob {len(data)}\\0'.encode() + data).hexdigest()
+              if actual != want:
+                  raise SystemExit(f'Archive mismatch for {rel}: {actual} != {want}')
+              dst = repo / rel
+              dst.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(src, dst)
+              print(f'Verified and staged: {rel} ({len(data)} bytes)')
+          PY
+
+      - name: Commit selected improvements
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts app/src/main/java/com/vertil/miningbtc/StratumMiner.kt app/src/main/java/com/vertil/miningbtc/MainActivity.kt app/src/main/java/com/vertil/miningbtc/MiningService.kt app/src/main/java/com/vertil/miningbtc/Bech32.kt app/src/main/AndroidManifest.xml app/src/main/res/drawable/ic_mining_btc.xml .github/workflows/android.yml README.md
+          git commit -m "Import selective v0.2.0 improvements"
+          git push origin phase2-stratum-hardening
+
+      - name: Refresh branch after import commit
+        run: git pull --ff-only origin phase2-stratum-hardening
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK, NDK and CMake
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Run native SHA-256d tests
+        run: |
+          cmake -S app/src/main/cpp/tests -B build/native-tests
+          cmake --build build/native-tests --parallel
+          ctest --test-dir build/native-tests --output-on-failure
+
+      - name: Validate Stratum mock server syntax
+        run: python3 -m py_compile tools/stratum_mock_pool.py
+
+      - name: Build debug APK
+        run: gradle --no-daemon assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mining-btc-phase2-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Remove temporary import workflow
+        if: always()
+        run: |
+          git rm -f .github/workflows/import-v020.yml || true
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Remove temporary v0.2.0 import workflow"
+            git push origin phase2-stratum-hardening
+          fi
