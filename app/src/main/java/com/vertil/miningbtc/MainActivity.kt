@@ -310,7 +310,7 @@ class MainActivity : Activity() {
         // Telemetry: best share difficulty, leading zero bits, hash.
         // These are the metrics that matter when solo mining: they tell you
         // how close you got to a real mainnet block.
-        s.addView(label("MEJOR SHARE ENCONTRADO", 10f, orange, true).padTop(14))
+        s.addView(label("MEJOR HASH DE TODOS LOS NONCES", 10f, orange, true).padTop(14))
         bestShareDiff = label("Best share diff: 0", 12f, white, true)
         s.addView(bestShareDiff)
         bestShareBits = label("Bits cero: 0 / ~78 (red Bitcoin)", 10f, muted, false)
