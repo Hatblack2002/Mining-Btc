@@ -1,4 +1,5 @@
 #include "pow_sha256.h"
+#include "nonce_scheduler.h"
 #include <iostream>
 #include <string>
 #include <cstdlib>
@@ -21,5 +22,15 @@ int main() {
   if(armMid!=mid || armHash!=got){std::cerr<<"FAIL ARM SHA2 vs portable\n";return 2;}
   std::cout<<"PASS ARM SHA2 vs portable\n";
  } else std::cout<<"SKIP ARM SHA2 vs portable (host has no ARM SHA2)\n";
+ NonceScheduler scheduler(4,(1ULL<<32)-2);
+ auto tail=scheduler.acquire();
+ if(tail.start!=(1ULL<<32)-2 || tail.count!=2 || tail.extranonce_epoch!=0) {
+  std::cerr<<"FAIL final nonce range rollover boundary\\n";return 3;
+ }
+ auto next=scheduler.acquire();
+ if(next.start!=0 || next.count!=4 || next.extranonce_epoch!=1) {
+  std::cerr<<"FAIL extranonce2 epoch rotation\\n";return 4;
+ }
+ std::cout<<"PASS disjoint nonce range boundary\\nPASS extranonce2 epoch rotation\\n";
  return 0;
 }
