@@ -43,5 +43,17 @@ int main() {
  candidate[31]=0x0f;
  if(!digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target acceptance\\n";return 6;}
  std::cout<<"PASS early target word rejection\\n";
+ Digest maxTarget;maxTarget.fill(0xff);
+ auto batch=scan_nonce_batch(header,100,513,8,false,maxTarget);
+ if(batch.hashes!=513 || batch.shares.size()!=513 || batch.shares.front()!=100 || batch.shares.back()!=612) {
+  std::cerr<<"FAIL native parallel batch scan coverage\\n";return 8;
+ }
+ std::cout<<"PASS native parallel batch coverage (8 workers)\\n";
+ Digest zeroTarget{};
+ auto rejectedBatch=scan_nonce_batch(header,100,128,8,false,zeroTarget);
+ if(rejectedBatch.hashes!=128 || !rejectedBatch.shares.empty()) {
+  std::cerr<<"FAIL native target filtering\\n";return 9;
+ }
+ std::cout<<"PASS native target filtering\\n";
  return 0;
 }
