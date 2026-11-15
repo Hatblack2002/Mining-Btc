@@ -31,7 +31,10 @@ data class MinerStats(
     val message: String = "",
     val latencyMs: Long = -1,
     val rejectionReason: String = "",
-    val difficultySuggestion: String = ""
+    val difficultySuggestion: String = "",
+    val stale: Long = 0,
+    val submitLatencyMs: Long = -1,
+    val bestShareDifficulty: Double = 0.0
 )
 
 class StratumMiner(private val config: PoolConfig, private val onStats: (MinerStats) -> Unit) {
@@ -44,6 +47,11 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     private val hashes = AtomicLong(0)
     private val accepted = AtomicLong(0)
     private val rejected = AtomicLong(0)
+    private val stale = AtomicLong(0)
+    private val bestShareDifficulty = java.util.concurrent.atomic.AtomicReference(java.math.BigDecimal.ZERO)
+    private val submitSentAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+    private val submitLatencyMs = AtomicLong(-1)
+    private val jobGate = Any()
     private val socketRef = AtomicReference<Socket?>(null)
     private val writerRef = AtomicReference<PrintWriter?>(null)
     private val requestId = AtomicLong(2)
@@ -54,7 +62,8 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     private val latencyMs = AtomicLong(-1)
     private val suggestDifficultyRequestId = AtomicLong(-1)
     private val nativeThreads = 8
-    private val nativeBatchSize = 262144
+    // Bounded batches limit how long a native scan can outlive a job or target update.
+    private val nativeBatchSize = 8192
     @Volatile private var rejectionReason = ""
     @Volatile private var lastMessage = "Connecting"
     @Volatile private var difficultySuggestionStatus = "Not sent"
@@ -108,7 +117,8 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                 }
             }
             val plain = connected ?: throw IllegalStateException("Unable to connect to ${config.host}:${config.port} over IPv4 or IPv6: " + (connectFailure?.message ?: "no resolved addresses"), connectFailure)
-            plain.soTimeout = 0
+            plain.soTimeout = 45000
+            plain.keepAlive = true
             val socket = if (config.tls) {
                 val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                     .createSocket(plain, config.host, config.port, true) as javax.net.ssl.SSLSocket
@@ -150,6 +160,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             send(JSONObject().put("id", 2).put("method", "mining.authorize")
                 .put("params", JSONArray().put(config.username).put(config.password)))
             val auth = awaitResponse(2, authorizeResponse, 10)
+            attempt = 0
             if (auth.optBoolean("result").not()) {
                 throw IllegalStateException("Pool authorization failed: ${auth.opt("error")}")
             }
@@ -242,9 +253,18 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                         val id = requestId.incrementAndGet()
                         val nonceHex = String.format(Locale.US, "%08x", shareNonce)
                         val params = JSONArray().put(config.username).put(job.id).put(currentExtra).put(job.ntime).put(nonceHex)
-                        submitIds[id] = true
-                        send(JSONObject().put("id", id).put("method", "mining.submit").put("params", params))
-                        lastMessage = "Native share submitted"
+                        val submitted = synchronized(jobGate) {
+                            if (jobRef.get() !== activeJob) {
+                                stale.incrementAndGet()
+                                false
+                            } else {
+                                submitIds[id] = true
+                                submitSentAt[id] = System.nanoTime()
+                                send(JSONObject().put("id", id).put("method", "mining.submit").put("params", params))
+                                true
+                            }
+                        }
+                        if (submitted) lastMessage = "Native share submitted"
                     }
                     val now = System.nanoTime()
                     if (now - lastRateAt >= 1_000_000_000L) {
@@ -282,8 +302,9 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                         val p = obj.getJSONArray("params")
                         val branchesJson = p.getJSONArray(4)
                         val branches = (0 until branchesJson.length()).map { branchesJson.getString(it) }
-                        jobRef.set(PoolJob(p.getString(0), p.getString(1), p.getString(2), p.getString(3),
-                            branches, p.getString(5), p.getString(6), p.getString(7), p.optBoolean(8)))
+                        val nextJob = PoolJob(p.getString(0), p.getString(1), p.getString(2), p.getString(3),
+                            branches, p.getString(5), p.getString(6), p.getString(7), p.optBoolean(8))
+                        synchronized(jobGate) { jobRef.set(nextJob) }
                         if (p.optBoolean(8)) lastMessage = "New clean job received"
                     }
                     "mining.set_difficulty" -> {
@@ -321,8 +342,15 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     if (sentAt > 0L) latencyMs.set((System.nanoTime() - sentAt) / 1_000_000L)
                     emit("Mining")
                 } else if (submitIds.remove(id) != null) {
+                    val sentAt = submitSentAt.remove(id) ?: 0L
+                    if (sentAt > 0L) submitLatencyMs.set((System.nanoTime() - sentAt) / 1_000_000L)
                     if (obj.optBoolean("result")) {
                         accepted.incrementAndGet()
+                        val acceptedDiff = java.math.BigDecimal.valueOf(difficulty.get())
+                        while (true) {
+                            val oldBest = bestShareDifficulty.get()
+                            if (acceptedDiff <= oldBest || bestShareDifficulty.compareAndSet(oldBest, acceptedDiff)) break
+                        }
                         rejectionReason = ""
                         lastMessage = "Share accepted"
                     } else {
@@ -361,7 +389,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     }
 
     private fun emit(state: String, rate: Double = 0.0) {
-        onStats(MinerStats(state, rate, hashes.get(), accepted.get(), rejected.get(), difficulty.get(), lastMessage, latencyMs.get(), rejectionReason, difficultySuggestionStatus))
+        onStats(MinerStats(state, rate, hashes.get(), accepted.get(), rejected.get(), difficulty.get(), lastMessage, latencyMs.get(), rejectionReason, difficultySuggestionStatus, stale.get(), submitLatencyMs.get(), bestShareDifficulty.get().toDouble()))
     }
 
     private fun hex(value: String): ByteArray {
