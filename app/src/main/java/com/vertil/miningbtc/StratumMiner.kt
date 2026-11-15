@@ -63,6 +63,9 @@ data class MinerStats(
     val bestShareNonce: Long = -1L,
     val hashFeed: List<HashFeedEntry> = emptyList(),
     val topHashes: List<HashFeedEntry> = emptyList(),
+    val cpuSensorName: String = "unavailable",
+    val batteryTempC: Double = 0.0,
+    val thermalStatus: Int = -1,
     val cpuTempC: Double = 0.0,
     val effectiveThreads: Int = 0
 )
@@ -112,6 +115,7 @@ class StratumMiner(
     @Volatile private var lastFeedEmitNanos = 0L
     @Volatile private var lastReportedRate = 0.0
     private val cpuTempC = AtomicReference(0.0)
+    private val cpuSensorName = AtomicReference("unavailable")
     @Volatile private var bestShareDifficulty = initialStats.bestShareDifficulty
     @Volatile private var bestShareBits = initialStats.bestShareBits
     @Volatile private var bestShareHashHex = initialStats.bestShareHashHex
@@ -158,8 +162,10 @@ class StratumMiner(
     private fun runThermalMonitor() {
         val zones = discoverThermalZones()
         while (running.get()) {
-            val temp = readHottestTemp(zones)
+            val reading = readHottestTemp(zones)
+            val temp = reading.first
             cpuTempC.set(temp)
+            cpuSensorName.set(reading.second)
             when {
                 temp >= 85.0 -> {
                     effectiveThreads.set(0)
@@ -174,7 +180,7 @@ class StratumMiner(
                     paused.set(false)
                 }
             }
-            try { Thread.sleep(5000) } catch (_: InterruptedException) { break }
+            try { Thread.sleep(2500) } catch (_: InterruptedException) { break }
         }
     }
 
@@ -186,17 +192,23 @@ class StratumMiner(
             .filter { it.exists() && it.canRead() }
     }
 
-    private fun readHottestTemp(zones: List<File>): Double {
+    private fun readHottestTemp(zones: List<File>): Pair<Double, String> {
         var hottest = 0.0
+        var hottestName = "no readable thermal_zone sensor"
         for (zone in zones) {
             try {
                 val raw = zone.readText().trim()
-                val millideg = raw.toInt()
-                val deg = millideg / 1000.0
-                if (deg in 0.0..120.0 && deg > hottest) hottest = deg
+                val value = raw.toInt()
+                val deg = if (value > 1000) value / 1000.0 else value / 10.0
+                if (deg in 0.0..120.0 && deg > hottest) {
+                    hottest = deg
+                    val typeFile = File(zone.parentFile, "type")
+                    val type = try { typeFile.readText().trim() } catch (_: Exception) { zone.parentFile?.name ?: "thermal_zone" }
+                    hottestName = "${zone.parentFile?.name ?: "thermal_zone"}:$type"
+                }
             } catch (_: Exception) {}
         }
-        return hottest
+        return hottest to hottestName
     }
 
     private fun runSession() {
@@ -623,6 +635,7 @@ class StratumMiner(
                 bestShareNonce = bestShareNonce,
                 hashFeed = synchronized(feedLock) { liveFeed.toList() },
                 topHashes = synchronized(feedLock) { topFeed.toList() },
+                cpuSensorName = cpuSensorName.get(),
                 cpuTempC = cpuTempC.get(),
                 effectiveThreads = effectiveThreads.get()
             )
