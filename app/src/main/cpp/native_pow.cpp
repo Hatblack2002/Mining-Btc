@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <atomic>
+#include <mutex>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -27,6 +28,49 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeHashHeader(JNIEnv* env,jclass,jb
  uint8_t header[80];for(int i=0;i<80;i++)header[i]=uint8_t(raw[i]);
  Midstate m=make_midstate(header,arm);Digest d=hash_header_nonce(header,uint32_t(nonce),m,arm);
  jbyteArray out=env->NewByteArray(32);env->SetByteArrayRegion(out,0,32,reinterpret_cast<const jbyte*>(d.data()));return out;
+}
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_vertil_miningbtc_NativePowEngine_nativeScanBatch(JNIEnv* env,jclass,jbyteArray input,jlong startNonce,jint nonceCount,jint requested,jboolean arm,jbyteArray targetInput) {
+ if(env->GetArrayLength(input)!=80 || env->GetArrayLength(targetInput)!=32 || startNonce<0 || nonceCount<=0 || requested<=0 || uint64_t(startNonce)+uint64_t(nonceCount)>(1ULL<<32)) return nullptr;
+ jbyte raw[80];env->GetByteArrayRegion(input,0,80,raw);
+ jbyte targetRaw[32];env->GetByteArrayRegion(targetInput,0,32,targetRaw);
+ uint8_t header[80],target[32];for(int i=0;i<80;i++)header[i]=uint8_t(raw[i]);for(int i=0;i<32;i++)target[i]=uint8_t(targetRaw[i]);
+ const Midstate mid=make_midstate(header,arm);
+ const unsigned count=static_cast<unsigned>(std::min<int>(requested,nonceCount));
+ std::atomic<uint32_t> next{0};
+ std::atomic<uint64_t> scanned{0};
+ std::mutex foundMutex;
+ std::vector<uint32_t> found;
+ std::vector<std::thread> workers;workers.reserve(count);
+ for(unsigned t=0;t<count;t++) workers.emplace_back([&] {
+  std::vector<uint32_t> localFound;
+  for(;;) {
+   const uint32_t offset=next.fetch_add(256,std::memory_order_relaxed);
+   if(offset>=uint32_t(nonceCount)) break;
+   const uint32_t end=std::min<uint32_t>(uint32_t(nonceCount),offset+256);
+   for(uint32_t i=offset;i<end;i++) {
+    const Digest digest=hash_header_nonce(header,uint32_t(uint64_t(startNonce)+i),mid,arm);
+    scanned.fetch_add(1,std::memory_order_relaxed);
+    bool meets=true;
+    for(int k=31;k>=0;k--) {
+     const uint8_t h=digest[size_t(k)],v=target[size_t(31-k)];
+     if(h<v) break;
+     if(h>v) { meets=false;break; }
+    }
+    if(meets) localFound.push_back(uint32_t(uint64_t(startNonce)+i));
+   }
+  }
+  if(!localFound.empty()) { std::lock_guard<std::mutex> lock(foundMutex);found.insert(found.end(),localFound.begin(),localFound.end()); }
+ });
+ for(auto& worker:workers) worker.join();
+ std::sort(found.begin(),found.end());
+ std::vector<jlong> values;values.reserve(found.size()+2);
+ values.push_back(jlong(scanned.load(std::memory_order_relaxed)));
+ values.push_back(jlong(found.size()));
+ for(uint32_t nonce:found) values.push_back(jlong(nonce));
+ jlongArray out=env->NewLongArray(jsize(values.size()));
+ env->SetLongArrayRegion(out,0,jsize(values.size()),values.data());
+ return out;
 }
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_com_vertil_miningbtc_NativePowEngine_nativeBenchmark(JNIEnv* env,jclass,jbyteArray input,jlong duration,jint requested,jboolean arm,jint affinityMode) {
