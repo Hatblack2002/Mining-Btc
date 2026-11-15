@@ -38,6 +38,7 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeScanBatch(JNIEnv* env,jclass,jby
  uint8_t header[80];for(int i=0;i<80;i++)header[i]=uint8_t(raw[i]);
  Digest target,blockTarget;for(int i=0;i<32;i++){target[size_t(i)]=uint8_t(targetRaw[i]);blockTarget[size_t(i)]=uint8_t(blockTargetRaw[i]);}
  ScanResult scan=scan_nonce_batch(header,uint32_t(startNonce),uint32_t(nonceCount),unsigned(requested),arm,target,blockTarget);
+ record_best_hash(scan);
  std::vector<jlong> values;values.reserve(scan.shares.size()+scan.blocks.size()+12+scan.feed.size()*9);
  values.push_back(jlong(scan.hashes));values.push_back(jlong(scan.shares.size()));
  for(uint32_t nonce:scan.shares) values.push_back(jlong(nonce));
@@ -62,6 +63,23 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeScanBatch(JNIEnv* env,jclass,jby
  }
  jlongArray out=env->NewLongArray(jsize(values.size()));
  env->SetLongArrayRegion(out,0,jsize(values.size()),values.data());
+ return out;
+}
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_vertil_miningbtc_NativePowEngine_nativePollBestHash(JNIEnv* env,jclass) {
+ BestHashSnapshot snapshot=get_best_hash();
+ if(!snapshot.has_best) return env->NewLongArray(0);
+ jlong values[9]; values[0]=jlong(snapshot.nonce);
+ for(int word=0;word<8;word++) {
+  const int i=word*4;
+  const uint32_t packed=(uint32_t(snapshot.digest[size_t(i)])<<24)|
+      (uint32_t(snapshot.digest[size_t(i+1)])<<16)|
+      (uint32_t(snapshot.digest[size_t(i+2)])<<8)|
+      uint32_t(snapshot.digest[size_t(i+3)]);
+  values[word+1]=jlong(packed);
+ }
+ jlongArray out=env->NewLongArray(9);
+ env->SetLongArrayRegion(out,0,9,values);
  return out;
 }
 extern "C" JNIEXPORT jlongArray JNICALL
