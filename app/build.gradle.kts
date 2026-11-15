@@ -24,3 +24,7 @@ android {
         cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
     }
 }
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
