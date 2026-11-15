@@ -28,7 +28,9 @@ data class MinerStats(
     val accepted: Long = 0,
     val rejected: Long = 0,
     val difficulty: Double = 0.0,
-    val message: String = ""
+    val message: String = "",
+    val latencyMs: Long = -1,
+    val rejectionReason: String = ""
 )
 
 class StratumMiner(private val config: PoolConfig, private val onStats: (MinerStats) -> Unit) {
@@ -47,6 +49,9 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     private val responses = java.util.concurrent.ConcurrentHashMap<Long, CountDownLatch>()
     private val responseValues = java.util.concurrent.ConcurrentHashMap<Long, JSONObject>()
     private val submitIds = java.util.concurrent.ConcurrentHashMap<Long, Boolean>()
+    private val pingSentAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+    private val latencyMs = AtomicLong(-1)
+    @Volatile private var rejectionReason = ""
     @Volatile private var lastMessage = "Connecting"
 
     private data class PoolJob(
@@ -155,6 +160,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             var sessionHashes = 0L
             var lastRateAt = System.nanoTime()
             var lastRateHashes = 0L
+            var lastPingAt = System.nanoTime()
 
             while (running.get()) {
                 val job = jobRef.get()
@@ -201,6 +207,12 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     }
                     nonce++
                     val now = System.nanoTime()
+                    if (now - lastPingAt >= 30_000_000_000L) {
+                        val pingId = requestId.incrementAndGet()
+                        pingSentAt[pingId] = now
+                        send(JSONObject().put("id", pingId).put("method", "mining.ping").put("params", JSONArray()))
+                        lastPingAt = now
+                    }
                     if (now - lastRateAt >= 1_000_000_000L) {
                         val delta = sessionHashes - lastRateHashes
                         val rate = delta * 1_000_000_000.0 / (now - lastRateAt)
@@ -255,9 +267,20 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     latch.countDown()
                 } else if (id == 1L || id == 2L) {
                     responseValues[id] = obj
+                } else if (pingSentAt.containsKey(id)) {
+                    val sentAt = pingSentAt.remove(id) ?: 0L
+                    if (sentAt > 0L) latencyMs.set((System.nanoTime() - sentAt) / 1_000_000L)
+                    emit("Mining")
                 } else if (submitIds.remove(id) != null) {
-                    if (obj.optBoolean("result")) accepted.incrementAndGet() else rejected.incrementAndGet()
-                    lastMessage = if (obj.optBoolean("result")) "Share accepted" else "Share rejected: ${obj.opt("error")}"
+                    if (obj.optBoolean("result")) {
+                        accepted.incrementAndGet()
+                        rejectionReason = ""
+                        lastMessage = "Share accepted"
+                    } else {
+                        rejected.incrementAndGet()
+                        rejectionReason = obj.opt("error")?.toString() ?: "Pool rejected share without a reason"
+                        lastMessage = "Share rejected: " + rejectionReason
+                    }
                     emit("Mining")
                 }
             }
@@ -289,7 +312,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     }
 
     private fun emit(state: String, rate: Double = 0.0) {
-        onStats(MinerStats(state, rate, hashes.get(), accepted.get(), rejected.get(), difficulty.get(), lastMessage))
+        onStats(MinerStats(state, rate, hashes.get(), accepted.get(), rejected.get(), difficulty.get(), lastMessage, latencyMs.get(), rejectionReason))
     }
 
     private fun hex(value: String): ByteArray {
