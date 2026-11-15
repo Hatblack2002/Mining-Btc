@@ -243,8 +243,10 @@ class MainActivity : Activity() {
         portInput = field("Port", prefs.getString("port", "3333") ?: "3333", true)
         // Keep the payout address separate from the Stratum username (wallet.worker).
         // Migrate older installs whose only saved value was the composed username.
-        val savedWallet = prefs.getString("wallet", null)
-            ?: (prefs.getString("user", "") ?: "").substringBeforeLast(".", prefs.getString("user", "") ?: "")
+        val savedWallet = WalletConfig.restoreWallet(
+            prefs.getString("wallet", null),
+            prefs.getString("user", null)
+        )
         userInput = field("Wallet (Bech32 mainnet)", savedWallet)
         workerNameInput = field("Worker name", prefs.getString("worker_name", "worker1") ?: "worker1")
         passInput = field("Worker password", prefs.getString("pass", "x") ?: "x")
@@ -426,7 +428,7 @@ class MainActivity : Activity() {
             toast("Wallet no es Bech32/Bech32m válida en mainnet (bc1…)")
             return
         }
-        val user = if (worker.isBlank()) wallet else wallet.substringBeforeLast(".", wallet) + "." + worker
+        val user = WalletConfig.stratumUsername(wallet, worker)
         getSharedPreferences("pool_config", MODE_PRIVATE).edit()
             .putString("host", host)
             .putString("port", port.toString())
