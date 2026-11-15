@@ -72,6 +72,8 @@ data class MinerStats(
     val bitsMissing: Int = 0,
     val cpuTempC: Double = 0.0,
     val effectiveThreads: Int = 0,
+    val nativeAffinityThreads: Int = 0,
+    val nativeAllowedCpus: Int = 0,
     val staleShares: Long = 0,
     val lastSubmitLatencyMs: Long = -1
 )
@@ -730,6 +732,8 @@ class StratumMiner(
     }
 
     private fun emit(state: String, rate: Double = 0.0) {
+        val nativeWorkers = NativePowEngine.nativeGetLastScanWorkerCount()
+        val thermalPaused = paused.get()
         onStats(
             MinerStats(
                 state = state,
@@ -754,7 +758,9 @@ class StratumMiner(
                 networkDifficulty = networkDifficulty,
                 bitsMissing = (BitcoinTarget.leadingZeroBits(networkTargetRef.get()) - bestShareBits).coerceAtLeast(0),
                 cpuTempC = cpuTempC.get(),
-                effectiveThreads = if (paused.get()) 0 else NativePowEngine.nativeGetLastScanWorkerCount().getOrElse(0) { 0L }.toInt(),
+                effectiveThreads = if (thermalPaused) 0 else nativeWorkers.getOrElse(0) { 0L }.toInt(),
+                nativeAffinityThreads = if (thermalPaused) 0 else nativeWorkers.getOrElse(2) { 0L }.toInt(),
+                nativeAllowedCpus = nativeWorkers.getOrElse(1) { 0L }.toInt(),
                 staleShares = staleShares.get(),
                 lastSubmitLatencyMs = lastSubmitLatencyMs.get()
             )
