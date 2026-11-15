@@ -389,13 +389,13 @@ class MiningService : Service() {
         val now = System.currentTimeMillis()
         if (now - lastTelemetryLogMs < 10_000L) return
         synchronized(telemetryFile) {
-            if (!telemetryFile.exists()) telemetryFile.writeText("timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs,active_native_threads,cpu_frequencies_khz,app_state\n")
+            if (!telemetryFile.exists()) telemetryFile.writeText("timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs,active_native_threads,affinity_workers,allowed_cpus,cpu_frequencies_khz,app_state\n")
             val sensor = stats.cpuSensorName.replace(",", "_").replace("\n", " ")
             val processState = ActivityManager.RunningAppProcessInfo()
             ActivityManager.getMyMemoryState(processState)
             val appState = if (processState.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) "foreground" else "background"
             val cpuFreqs = readCpuFrequenciesKHz()
-            telemetryFile.appendText("$now,${stats.cpuTempC},$sensor,${stats.batteryTempC},${stats.thermalStatus},${stats.hashrate},${stats.effectiveThreads},$cpuFreqs,$appState\n")
+            telemetryFile.appendText("$now,${stats.cpuTempC},$sensor,${stats.batteryTempC},${stats.thermalStatus},${stats.hashrate},${stats.effectiveThreads},${stats.nativeAffinityThreads},${stats.nativeAllowedCpus},$cpuFreqs,$appState\n")
             lastTelemetryLogMs = now
         }
     }
