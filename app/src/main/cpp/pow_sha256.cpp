@@ -7,6 +7,12 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <sched.h>
+#include <pthread.h>
+#include <chrono>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #if defined(__ANDROID__) && defined(__aarch64__)
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
@@ -64,16 +70,35 @@ static bool digest_numeric_less(const Digest& a,const Digest& b) {
  for(int i=27;i>=0;i--) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
  return false;
 }
+static std::atomic<unsigned> g_last_scan_workers{0};
+static std::atomic<unsigned> g_last_scan_allowed_cpus{0};
+static std::atomic<int64_t> g_last_affinity_log_ms{0};
+unsigned last_scan_worker_count() { return g_last_scan_workers.load(std::memory_order_relaxed); }
+unsigned last_scan_allowed_cpu_count() { return g_last_scan_allowed_cpus.load(std::memory_order_relaxed); }
 ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t count,unsigned threads,bool arm,const Digest& target,const Digest& blockTarget) {
  if(count==0 || threads==0 || uint64_t(start)+uint64_t(count)>(1ULL<<32)) return {0,{},{},0,{},false,{}};
  const Midstate mid=make_midstate(header,arm);
+ cpu_set_t allowed; CPU_ZERO(&allowed);
+ const bool have_allowed = sched_getaffinity(0,sizeof(allowed),&allowed)==0;
+ unsigned allowed_count=0;
+ if(have_allowed) for(unsigned cpu=0;cpu<CPU_SETSIZE;cpu++) if(CPU_ISSET(cpu,&allowed)) allowed_count++;
+ g_last_scan_workers.store(threads,std::memory_order_relaxed);
+ g_last_scan_allowed_cpus.store(allowed_count,std::memory_order_relaxed);
+ const int64_t now_ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+ int64_t expected_log=g_last_affinity_log_ms.load(std::memory_order_relaxed);
+ if(now_ms-expected_log>=10000 && g_last_affinity_log_ms.compare_exchange_strong(expected_log,now_ms)) {
+#if defined(__ANDROID__)
+  __android_log_print(ANDROID_LOG_INFO,"MiningBTC-Native","scan workers=%u/%u allowed_cpus=%u affinity=all-allowed",threads,threads,allowed_count);
+#endif
+ }
  std::atomic<uint32_t> next{0};
  std::atomic<uint64_t> scanned{0};
  std::mutex resultMutex;
  std::vector<uint32_t> found; std::vector<uint32_t> blocks;
  Digest bestDigest{}; uint32_t bestNonce=0; bool hasBest=false; std::vector<FeedSample> feed;
  std::vector<std::thread> workers;workers.reserve(threads);
- for(unsigned t=0;t<threads;t++) workers.emplace_back([&] {
+ for(unsigned t=0;t<threads;t++) workers.emplace_back([&,t] {
+  if(have_allowed) (void)pthread_setaffinity_np(pthread_self(),sizeof(allowed),&allowed);
   std::vector<uint32_t> local; std::vector<uint32_t> localBlocks;
   Digest localBest{}; uint32_t localBestNonce=0; bool localHasBest=false; std::array<FeedSample,8> localFeed{}; uint32_t localFeedCount=0;
   for(;;) {
