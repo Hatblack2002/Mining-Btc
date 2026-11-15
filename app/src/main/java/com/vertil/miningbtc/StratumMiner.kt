@@ -162,7 +162,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             var lastRateHashes = 0L
             var lastPingAt = System.nanoTime()
 
-            while (running.get() && sessionConnected) {
+            while (running.get() && socketRef.get() === socket && !socket.isClosed) {
                 val loopNow = System.nanoTime()
                 if (loopNow - lastPingAt >= 30_000_000_000L) {
                     val pingId = requestId.incrementAndGet()
