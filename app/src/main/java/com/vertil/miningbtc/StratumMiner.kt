@@ -385,16 +385,6 @@ class StratumMiner(
             val useArm = NativePowEngine.nativeCapabilities().contains("arm64_sha2=true")
 
             while (running.get() && socketRef.get() === socket && !socket.isClosed) {
-                // Thermal pause: keep the session alive (ping + reader), but
-                // suspend nonce scanning until the phone cools below 85 C.
-                if (paused.get()) {
-                    val temp = cpuTempC.get()
-                    lastMessage = "Pausa térmica: %.1f°C · sesión viva".format(Locale.US, temp)
-                    emit("Throttled")
-                    try { Thread.sleep(2000) } catch (_: InterruptedException) { break }
-                    continue
-                }
-
                 val loopNow = System.nanoTime()
                 expirePendingSubmits(loopNow)
                 if (loopNow - lastPingAt >= 30_000_000_000L) {
@@ -402,6 +392,15 @@ class StratumMiner(
                     pingSentAt[pingId] = loopNow
                     send(JSONObject().put("id", pingId).put("method", "mining.ping").put("params", JSONArray()))
                     lastPingAt = loopNow
+                }
+                // Thermal pause suspends hashing but keeps Stratum keepalive and
+                // submit timeouts active so the pool session does not go stale.
+                if (paused.get()) {
+                    val temp = cpuTempC.get()
+                    lastMessage = "Pausa térmica: %.1f°C · sesión viva".format(Locale.US, temp)
+                    emit("Throttled")
+                    try { Thread.sleep(2000) } catch (_: InterruptedException) { break }
+                    continue
                 }
                 val job = jobRef.get()
                 if (job == null) {
