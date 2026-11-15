@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   import-and-build:
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     if: github.event.head_commit.message == 'Start selective v0.2.0 import'
     runs-on: ubuntu-latest
     steps:
@@ -73,8 +76,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses
+      - name: Configure Android SDK manager and accept licenses
+        run: |
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
       - name: Install Android SDK, NDK and CMake
         run: |
