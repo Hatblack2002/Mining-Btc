@@ -128,7 +128,7 @@ class MainActivity : Activity() {
             val nowNs = SystemClock.elapsedRealtimeNanos()
             val deltaHashes = stats.totalHashes - previousHashCount
             val deltaNs = nowNs - previousHashTimeNs
-            if (deltaHashes > 0 && deltaNs > 0 && stats.hashrate <= 0.0) {
+            if (previousHashTimeNs > 0L && deltaHashes > 0 && deltaNs > 0 && stats.hashrate <= 0.0) {
                 val measured = deltaHashes * 1_000_000_000.0 / deltaNs
                 smoothedFallbackRate = if (smoothedFallbackRate <= 0.0) measured else smoothedFallbackRate * 0.65 + measured * 0.35
             }
