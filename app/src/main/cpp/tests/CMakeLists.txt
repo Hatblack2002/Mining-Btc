@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.22)
+project(powlab_native_tests LANGUAGES CXX)
+enable_testing()
+add_executable(pow_sha256_test pow_sha256_test.cpp ../pow_sha256.cpp ../sha256_portable.cpp)
+target_include_directories(pow_sha256_test PRIVATE ../include ..)
+target_compile_features(pow_sha256_test PRIVATE cxx_std_17)
+target_compile_options(pow_sha256_test PRIVATE -O2 -Wall -Wextra -Wconversion)
+add_test(NAME pow_sha256_vectors COMMAND pow_sha256_test)
