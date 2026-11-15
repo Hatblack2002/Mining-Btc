@@ -45,9 +45,10 @@ Digest hash_header_nonce(const uint8_t header[80],uint32_t nonce,const Midstate&
  Digest digest;for(int i=0;i<8;i++)store_be(digest.data()+4*i,out[i]);return digest;
 }
 bool digest_meets_target_early(const Digest& h,const Digest& t) {
- // SHA digest is a big-endian 256-bit integer. Reject using its most-significant word first.
- for(int i=0;i<4;i++) if(h[i]!=t[i]) return h[i]<t[i];
- for(int i=4;i<32;i++) if(h[i]!=t[i]) return h[i]<t[i];
+ // Bitcoin interprets the raw SHA digest as a little-endian uint256.
+ // Reject on the most-significant (last) 32-bit word before comparing the remainder.
+ for(int i=31;i>=28;i--) if(h[size_t(i)]!=t[size_t(i)]) return h[size_t(i)]<t[size_t(i)];
+ for(int i=27;i>=0;i--) if(h[size_t(i)]!=t[size_t(i)]) return h[size_t(i)]<t[size_t(i)];
  return true;
 }
 static std::string hex(const uint8_t* p,size_t n) {
