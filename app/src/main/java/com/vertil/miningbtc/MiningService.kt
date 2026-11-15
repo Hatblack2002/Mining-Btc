@@ -54,7 +54,7 @@ class MiningService : Service() {
     @Volatile private var lastStatsPersistMs = 0L
     @Volatile private var lastNotificationMs = 0L
     @Volatile private var lastPersistedBestHash = ""
-    private val telemetryFile by lazy { File(filesDir, "mining-telemetry.csv") }
+    private val telemetryFile by lazy { File(filesDir, "mining-telemetry-v2.csv") }
     private val thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
         officialThermalStatus = status
         miner?.setSystemThermalStatus(status)
@@ -389,14 +389,26 @@ class MiningService : Service() {
         val now = System.currentTimeMillis()
         if (now - lastTelemetryLogMs < 10_000L) return
         synchronized(telemetryFile) {
-            if (!telemetryFile.exists()) telemetryFile.writeText("timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs,app_state\n")
+            if (!telemetryFile.exists()) telemetryFile.writeText("timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs,active_native_threads,cpu_frequencies_khz,app_state\n")
             val sensor = stats.cpuSensorName.replace(",", "_").replace("\n", " ")
             val processState = ActivityManager.RunningAppProcessInfo()
             ActivityManager.getMyMemoryState(processState)
             val appState = if (processState.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) "foreground" else "background"
-            telemetryFile.appendText("$now,${stats.cpuTempC},$sensor,${stats.batteryTempC},${stats.thermalStatus},${stats.hashrate},$appState\n")
+            val cpuFreqs = readCpuFrequenciesKHz()
+            telemetryFile.appendText("$now,${stats.cpuTempC},$sensor,${stats.batteryTempC},${stats.thermalStatus},${stats.hashrate},${stats.effectiveThreads},$cpuFreqs,$appState\n")
             lastTelemetryLogMs = now
         }
+    }
+
+    private fun readCpuFrequenciesKHz(): String {
+        val root = File("/sys/devices/system/cpu")
+        return root.listFiles()?.filter { it.name.matches(Regex("cpu[0-9]+")) }
+            ?.sortedBy { it.name.removePrefix("cpu").toIntOrNull() ?: Int.MAX_VALUE }
+            ?.joinToString(";") { cpu ->
+                val value = try { File(cpu, "cpufreq/scaling_cur_freq").readText().trim().toLongOrNull() }
+                    catch (_: Exception) { null }
+                cpu.name + ":" + (value ?: -1)
+            }.orEmpty()
     }
 
     fun setHashFeedRate(rate: Int) { miner?.setHashFeedRate(rate) }
