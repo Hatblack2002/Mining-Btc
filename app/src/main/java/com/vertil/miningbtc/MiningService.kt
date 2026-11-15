@@ -7,12 +7,17 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.os.BatteryManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import java.io.File
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -38,6 +43,13 @@ class MiningService : Service() {
     }
 
     private val binder = LocalBinder()
+    private val thermalExecutor = Executors.newSingleThreadExecutor()
+    private val environmentRunning = AtomicBoolean(false)
+    @Volatile private var batteryTempC = 0.0
+    @Volatile private var officialThermalStatus = -1
+    @Volatile private var lastTelemetryLogMs = 0L
+    private val telemetryFile by lazy { File(filesDir, "mining-telemetry.csv") }
+    private val thermalListener = PowerManager.OnThermalStatusChangedListener { status -> officialThermalStatus = status }
     private var miner: StratumMiner? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val listeners = CopyOnWriteArrayList<(MinerStats) -> Unit>()
@@ -53,6 +65,8 @@ class MiningService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        registerThermalStatusListener()
+        startEnvironmentMonitor()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -111,6 +125,11 @@ class MiningService : Service() {
     }
 
     override fun onDestroy() {
+        environmentRunning.set(false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try { (getSystemService(POWER_SERVICE) as PowerManager).removeThermalStatusListener(thermalListener) } catch (_: Exception) {}
+        }
+        thermalExecutor.shutdownNow()
         stopMining()
         wakeLock?.let { wl ->
             try { if (wl.isHeld) wl.release() } catch (_: Exception) {}
@@ -129,20 +148,24 @@ class MiningService : Service() {
     }
 
     private fun onStats(stats: MinerStats, prefs: SharedPreferences) {
-        lastStats = stats
+        val enriched = enrichStats(stats)
+        lastStats = enriched
         for (l in listeners) {
-            try { l(stats) } catch (_: Exception) {}
+            try { l(enriched) } catch (_: Exception) {}
         }
-        updateNotification(stats.message, stats.hashrate, stats.bestShareDifficulty, stats.bestShareBits)
+        updateNotification(enriched.message, enriched.hashrate, enriched.bestShareDifficulty, enriched.bestShareBits)
+        appendTelemetryIfDue(enriched)
 
         // Persist totals across reboots. Best share and counters survive app kills.
         prefs.edit()
             .putLong("totalHashes", stats.totalHashes)
             .putLong("totalAccepted", stats.accepted)
             .putLong("totalRejected", stats.rejected)
-            .putString("bestShareHashHex", stats.bestShareHashHex)
-            .putString("bestShareDifficulty", stats.bestShareDifficulty.toString())
-            .putInt("bestShareBits", stats.bestShareBits)
+            .putString("bestShareHashHex", enriched.bestShareHashHex)
+            .putString("bestShareDifficulty", enriched.bestShareDifficulty.toString())
+            .putInt("bestShareBits", enriched.bestShareBits)
+            .putLong("bestShareTimestampMs", enriched.bestShareTimestampMs)
+            .putLong("bestShareNonce", enriched.bestShareNonce)
             .apply()
     }
 
@@ -154,6 +177,8 @@ class MiningService : Service() {
         val bestDiff = bestDiffStr.toDoubleOrNull() ?: 0.0
         val bestBits = prefs.getInt("bestShareBits", 0)
         val bestHashHex = prefs.getString("bestShareHashHex", "") ?: ""
+        val bestTimestamp = prefs.getLong("bestShareTimestampMs", 0L)
+        val bestNonce = prefs.getLong("bestShareNonce", -1L)
         return MinerStats(
             state = "Idle",
             totalHashes = totalHashes,
@@ -161,8 +186,60 @@ class MiningService : Service() {
             rejected = totalRejected,
             bestShareDifficulty = bestDiff,
             bestShareBits = bestBits,
-            bestShareHashHex = bestHashHex
+            bestShareHashHex = bestHashHex,
+            bestShareTimestampMs = bestTimestamp,
+            bestShareNonce = bestNonce
         )
+    }
+
+    private fun registerThermalStatusListener() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val pm = getSystemService(POWER_SERVICE) as PowerManager
+                pm.addThermalStatusListener(thermalExecutor, thermalListener)
+                officialThermalStatus = pm.currentThermalStatus
+            } catch (_: Exception) { officialThermalStatus = -1 }
+        }
+    }
+
+    private fun startEnvironmentMonitor() {
+        if (!environmentRunning.compareAndSet(false, true)) return
+        Thread({
+            while (environmentRunning.get()) {
+                try {
+                    val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                    val raw = battery?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+                    batteryTempC = if (raw >= 0) raw / 10.0 else 0.0
+                    lastStats?.let { old ->
+                        val updated = enrichStats(old)
+                        lastStats = updated
+                        listeners.forEach { listener -> try { listener(updated) } catch (_: Exception) {} }
+                    }
+                    Thread.sleep(2500)
+                } catch (_: InterruptedException) { break }
+                catch (_: Exception) { try { Thread.sleep(2500) } catch (_: InterruptedException) { break } }
+            }
+        }, "mining-environment-monitor").apply { isDaemon = true; start() }
+    }
+
+    private fun enrichStats(stats: MinerStats): MinerStats =
+        stats.copy(batteryTempC = batteryTempC, thermalStatus = officialThermalStatus)
+
+    private fun appendTelemetryIfDue(stats: MinerStats) {
+        val now = System.currentTimeMillis()
+        if (now - lastTelemetryLogMs < 10_000L) return
+        synchronized(telemetryFile) {
+            if (!telemetryFile.exists()) telemetryFile.writeText("timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs\\n")
+            val sensor = stats.cpuSensorName.replace(",", "_").replace("\\n", " ")
+            telemetryFile.appendText("$now,${stats.cpuTempC},$sensor,${stats.batteryTempC},${stats.thermalStatus},${stats.hashrate}\\n")
+            lastTelemetryLogMs = now
+        }
+    }
+
+    fun setHashFeedRate(rate: Int) { miner?.setHashFeedRate(rate) }
+
+    fun telemetryCsvText(): String = synchronized(telemetryFile) {
+        if (telemetryFile.exists()) telemetryFile.readText() else "timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs\\n"
     }
 
     private fun createNotificationChannel() {
