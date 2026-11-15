@@ -136,7 +136,9 @@ class MainActivity : Activity() {
                 " · Pool diff: " + stats.difficulty +
                 (if (stats.latencyMs >= 0) " · Latency: " + stats.latencyMs + " ms" else "") +
                 (if (stats.rejectionReason.isNotBlank()) " · Rejection: " + stats.rejectionReason else "") +
-                (if (stats.difficultySuggestion.isNotBlank()) " · Diff req: " + stats.difficultySuggestion else "")
+                (if (stats.difficultySuggestion.isNotBlank()) " · Diff req: " + stats.difficultySuggestion else "") +
+                " · Submit: " + (if (stats.lastSubmitLatencyMs >= 0) "${stats.lastSubmitLatencyMs} ms" else "—") +
+                " · Obsoletos: " + stats.staleShares
 
             bestShareDiff.text = "Dificultad equivalente: " + formatDifficulty(stats.bestShareDifficulty)
             bestShareBits.text = "Bits cero: " + stats.bestShareBits + " / ~78 (red Bitcoin)"

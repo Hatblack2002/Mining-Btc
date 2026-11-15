@@ -12,6 +12,7 @@ import java.math.RoundingMode
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
@@ -70,7 +71,9 @@ data class MinerStats(
     val networkDifficulty: Double = 0.0,
     val bitsMissing: Int = 0,
     val cpuTempC: Double = 0.0,
-    val effectiveThreads: Int = 0
+    val effectiveThreads: Int = 0,
+    val staleShares: Long = 0,
+    val lastSubmitLatencyMs: Long = -1
 )
 
 /**
@@ -109,9 +112,18 @@ class StratumMiner(
     private val requestId = AtomicLong(2)
     private val responses = java.util.concurrent.ConcurrentHashMap<Long, CountDownLatch>()
     private val responseValues = java.util.concurrent.ConcurrentHashMap<Long, JSONObject>()
-    private val submitIds = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+    private data class PendingSubmit(
+        val nonce: Long,
+        val jobId: String,
+        val sentAtNanos: Long,
+        val obsolete: AtomicBoolean = AtomicBoolean(false)
+    )
+    private val submitIds = java.util.concurrent.ConcurrentHashMap<Long, PendingSubmit>()
     private val pingSentAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     private val latencyMs = AtomicLong(-1)
+    private val lastSubmitLatencyMs = AtomicLong(-1)
+    private val staleShares = AtomicLong(initialStats.staleShares)
+    private val lastInboundAtNanos = AtomicLong(0L)
     private val suggestDifficultyRequestId = AtomicLong(-1)
     private val maxThreads = 8
     private val effectiveThreads = AtomicInteger(maxThreads)
@@ -286,13 +298,17 @@ class StratumMiner(
                     (connectFailure?.message ?: "no resolved addresses"),
                 connectFailure
             )
-            plain.soTimeout = 0
+            plain.keepAlive = true
+            plain.soTimeout = 45_000
             val socket = if (config.tls) {
                 val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                     .createSocket(plain, config.host, config.port, true) as javax.net.ssl.SSLSocket
                 sslSocket.startHandshake()
                 sslSocket
             } else plain
+            socket.keepAlive = true
+            socket.soTimeout = 45_000
+            lastInboundAtNanos.set(System.nanoTime())
             socketRef.set(socket)
             jobRef.set(null)
             val writer = PrintWriter(socket.getOutputStream(), true)
@@ -301,7 +317,16 @@ class StratumMiner(
             thread(name = "stratum-reader", isDaemon = true) {
                 try {
                     while (running.get()) {
-                        val line = reader.readLine() ?: break
+                        val line = try {
+                            reader.readLine()
+                        } catch (timeout: SocketTimeoutException) {
+                            val idleNanos = System.nanoTime() - lastInboundAtNanos.get()
+                            if (idleNanos >= 120_000_000_000L) {
+                                throw SocketTimeoutException("No Stratum traffic from pool for 120 seconds")
+                            }
+                            continue
+                        } ?: break
+                        lastInboundAtNanos.set(System.nanoTime())
                         handleLine(line)
                     }
                 } catch (_: Exception) {}
@@ -441,7 +466,7 @@ class StratumMiner(
                         val blockId = requestId.incrementAndGet()
                         val blockNonceHex = String.format(Locale.US, "%08x", blockNonce)
                         val blockParams = JSONArray().put(config.username).put(job.id).put(currentExtra).put(job.ntime).put(blockNonceHex)
-                        submitIds[blockId] = blockNonce
+                        submitIds[blockId] = PendingSubmit(blockNonce, job.id, System.nanoTime())
                         addFeedEntry(blockNonce, blockHash, "block")
                         send(JSONObject().put("id", blockId).put("method", "mining.submit").put("params", blockParams))
                         lastMessage = "BLOCK FOUND · network target met · nonce $blockNonceHex"
@@ -468,7 +493,7 @@ class StratumMiner(
                         val id = requestId.incrementAndGet()
                         val nonceHex = String.format(Locale.US, "%08x", shareNonce)
                         val params = JSONArray().put(config.username).put(job.id).put(currentExtra).put(job.ntime).put(nonceHex)
-                        submitIds[id] = shareNonce
+                        submitIds[id] = PendingSubmit(shareNonce, job.id, System.nanoTime())
                         addFeedEntry(shareNonce, shareHash, if (blockRecord != null) "block" else "pending")
                         // Submit the network-target share immediately, before alert I/O.
                         send(JSONObject().put("id", id).put("method", "mining.submit").put("params", params))
@@ -500,6 +525,7 @@ class StratumMiner(
             if (running.get()) emit("Error")
         } finally {
             try { socketRef.getAndSet(null)?.close() } catch (_: Exception) {}
+            submitIds.values.forEach { it.obsolete.set(true) }
             writerRef.set(null)
         }
     }
@@ -520,6 +546,10 @@ class StratumMiner(
                         networkBitsHex = newJob.nbits.lowercase(Locale.US)
                         networkDifficulty = BitcoinTarget.difficulty(networkTarget)
                         reportedBlockNonces.clear()
+                        if (newJob.clean) {
+                            submitIds.values.filter { it.jobId != newJob.id }.forEach { it.obsolete.set(true) }
+                            lastMessage = "clean_jobs=true · previous nonce scan cancelled"
+                        }
                         jobRef.set(newJob)
                         if (p.optBoolean(8)) lastMessage = "New clean job received"
                     }
@@ -558,15 +588,22 @@ class StratumMiner(
                     if (sentAt > 0L) latencyMs.set((System.nanoTime() - sentAt) / 1_000_000L)
                     emit("Mining")
                 } else if (submitIds.containsKey(id)) {
-                    val submittedNonce = submitIds.remove(id) ?: -1L
+                    val pending = submitIds.remove(id) ?: return
+                    val submittedNonce = pending.nonce
+                    lastSubmitLatencyMs.set((System.nanoTime() - pending.sentAtNanos) / 1_000_000L)
                     if (obj.optBoolean("result")) {
                         accepted.incrementAndGet()
                         rejectionReason = ""
-                        lastMessage = "Share accepted"
+                        lastMessage = "Share accepted · submit ${lastSubmitLatencyMs.get()} ms"
                         updateFeedStatus(submittedNonce, "accepted")
                     } else {
                         rejected.incrementAndGet()
                         rejectionReason = obj.opt("error")?.toString() ?: "Pool rejected share without a reason"
+                        val lowerError = rejectionReason.lowercase(Locale.US)
+                        if (pending.obsolete.get() || lowerError.contains("stale") ||
+                            lowerError.contains("job not found") || lowerError.contains("duplicate")) {
+                            staleShares.incrementAndGet()
+                        }
                         lastMessage = "Share rejected: " + rejectionReason
                         updateFeedStatus(submittedNonce, "rejected")
                     }
@@ -719,7 +756,9 @@ class StratumMiner(
                 networkDifficulty = networkDifficulty,
                 bitsMissing = (BitcoinTarget.leadingZeroBits(networkTargetRef.get()) - bestShareBits).coerceAtLeast(0),
                 cpuTempC = cpuTempC.get(),
-                effectiveThreads = effectiveThreads.get()
+                effectiveThreads = effectiveThreads.get(),
+                staleShares = staleShares.get(),
+                lastSubmitLatencyMs = lastSubmitLatencyMs.get()
             )
         )
     }

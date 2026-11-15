@@ -186,6 +186,7 @@ class MiningService : Service() {
                 .putLong("totalHashes", enriched.totalHashes)
                 .putLong("totalAccepted", enriched.accepted)
                 .putLong("totalRejected", enriched.rejected)
+                .putLong("totalStale", enriched.staleShares)
                 .putString("bestShareHashHex", enriched.bestShareHashHex)
                 .putString("bestShareDifficulty", enriched.bestShareDifficulty.toString())
                 .putInt("bestShareBits", enriched.bestShareBits)
@@ -201,6 +202,7 @@ class MiningService : Service() {
         val totalHashes = prefs.getLong("totalHashes", 0L)
         val totalAccepted = prefs.getLong("totalAccepted", 0L)
         val totalRejected = prefs.getLong("totalRejected", 0L)
+        val totalStale = prefs.getLong("totalStale", 0L)
         val bestDiffStr = prefs.getString("bestShareDifficulty", "0.0") ?: "0.0"
         val bestDiff = bestDiffStr.toDoubleOrNull() ?: 0.0
         val bestBits = prefs.getInt("bestShareBits", 0)
@@ -212,6 +214,7 @@ class MiningService : Service() {
             totalHashes = totalHashes,
             accepted = totalAccepted,
             rejected = totalRejected,
+            staleShares = totalStale,
             bestShareDifficulty = bestDiff,
             bestShareBits = bestBits,
             bestShareHashHex = bestHashHex,
@@ -227,6 +230,7 @@ class MiningService : Service() {
             .put("totalHashes", prefs.getLong("totalHashes", 0L))
             .put("totalAccepted", prefs.getLong("totalAccepted", 0L))
             .put("totalRejected", prefs.getLong("totalRejected", 0L))
+            .put("totalStale", prefs.getLong("totalStale", 0L))
             .put("bestShareHashHex", prefs.getString("bestShareHashHex", "") ?: "")
             .put("bestShareDifficulty", prefs.getString("bestShareDifficulty", "0.0") ?: "0.0")
             .put("bestShareBits", prefs.getInt("bestShareBits", 0))
@@ -245,6 +249,7 @@ class MiningService : Service() {
             .putLong("totalHashes", obj.optLong("totalHashes", 0L).coerceAtLeast(0L))
             .putLong("totalAccepted", obj.optLong("totalAccepted", 0L).coerceAtLeast(0L))
             .putLong("totalRejected", obj.optLong("totalRejected", 0L).coerceAtLeast(0L))
+            .putLong("totalStale", obj.optLong("totalStale", 0L).coerceAtLeast(0L))
             .putString("bestShareHashHex", obj.optString("bestShareHashHex", ""))
             .putString("bestShareDifficulty", obj.optString("bestShareDifficulty", "0.0"))
             .putInt("bestShareBits", obj.optInt("bestShareBits", 0).coerceIn(0, 256))
@@ -263,7 +268,7 @@ class MiningService : Service() {
         val wasRunning = running
         if (wasRunning) stopMining()
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-            .remove("totalHashes").remove("totalAccepted").remove("totalRejected")
+            .remove("totalHashes").remove("totalAccepted").remove("totalRejected").remove("totalStale")
             .remove("bestShareHashHex").remove("bestShareDifficulty").remove("bestShareBits")
             .remove("bestShareTimestampMs").remove("bestShareNonce").apply()
         NativePowEngine.nativeResetBestHash()
