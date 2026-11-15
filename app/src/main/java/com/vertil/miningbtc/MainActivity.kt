@@ -524,7 +524,6 @@ class MainActivity : Activity() {
         if (!configSaved) { toast("Primero guarda y valida la configuración."); return }
         val intent = Intent(this, MiningService::class.java).setAction(MiningService.ACTION_START)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
-        if (!bound) bindService(Intent(this, MiningService::class.java), connection, Context.BIND_AUTO_CREATE)
         showMiningScreen()
         status.text = "● CONECTANDO"; status.setTextColor(yellow)
     }
