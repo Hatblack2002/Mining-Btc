@@ -55,16 +55,27 @@ bool digest_meets_stratum_target(const Digest& h,const Digest& target) {
  }
  return true;
 }
+static bool digest_numeric_less(const Digest& a,const Digest& b) {
+ // Bitcoin uint256 uses the reversed SHA digest byte order. Compare its
+ // most-significant 32-bit word first, then the remaining words only on ties.
+ const uint32_t ah=(uint32_t(a[31])<<24)|(uint32_t(a[30])<<16)|(uint32_t(a[29])<<8)|uint32_t(a[28]);
+ const uint32_t bh=(uint32_t(b[31])<<24)|(uint32_t(b[30])<<16)|(uint32_t(b[29])<<8)|uint32_t(b[28]);
+ if(ah!=bh) return ah<bh;
+ for(int i=27;i>=0;i--) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
+ return false;
+}
 ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t count,unsigned threads,bool arm,const Digest& target) {
- if(count==0 || threads==0 || uint64_t(start)+uint64_t(count)>(1ULL<<32)) return {0,{}};
+ if(count==0 || threads==0 || uint64_t(start)+uint64_t(count)>(1ULL<<32)) return {0,{},0,{},false};
  const Midstate mid=make_midstate(header,arm);
  std::atomic<uint32_t> next{0};
  std::atomic<uint64_t> scanned{0};
- std::mutex foundMutex;
+ std::mutex resultMutex;
  std::vector<uint32_t> found;
+ Digest bestDigest{}; uint32_t bestNonce=0; bool hasBest=false;
  std::vector<std::thread> workers;workers.reserve(threads);
  for(unsigned t=0;t<threads;t++) workers.emplace_back([&] {
   std::vector<uint32_t> local;
+  Digest localBest{}; uint32_t localBestNonce=0; bool localHasBest=false;
   for(;;) {
    const uint32_t offset=next.fetch_add(256,std::memory_order_relaxed);
    if(offset>=count) break;
@@ -73,14 +84,21 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
     const uint32_t nonce=uint32_t(uint64_t(start)+i);
     const Digest digest=hash_header_nonce(header,nonce,mid,arm);
     scanned.fetch_add(1,std::memory_order_relaxed);
+    if(!localHasBest || digest_numeric_less(digest,localBest)) {
+     localBest=digest; localBestNonce=nonce; localHasBest=true;
+    }
     if(digest_meets_stratum_target(digest,target)) local.push_back(nonce);
    }
   }
-  if(!local.empty()) { std::lock_guard<std::mutex> lock(foundMutex);found.insert(found.end(),local.begin(),local.end()); }
+  std::lock_guard<std::mutex> lock(resultMutex);
+  found.insert(found.end(),local.begin(),local.end());
+  if(localHasBest && (!hasBest || digest_numeric_less(localBest,bestDigest))) {
+   bestDigest=localBest; bestNonce=localBestNonce; hasBest=true;
+  }
  });
  for(auto& worker:workers) worker.join();
  std::sort(found.begin(),found.end());
- return {scanned.load(std::memory_order_relaxed),std::move(found)};
+ return {scanned.load(std::memory_order_relaxed),std::move(found),bestNonce,bestDigest,hasBest};
 }
 bool digest_meets_target_early(const Digest& h,const Digest& t) {
  // Bitcoin interprets the raw SHA digest as a little-endian uint256.
