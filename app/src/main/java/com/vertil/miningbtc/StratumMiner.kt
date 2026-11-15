@@ -180,7 +180,10 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                         emit("Mining", rate)
                     }
                 }
-                if (nonce > 0xffffffffL) extraCounter = extraCounter.add(BigInteger.ONE)
+                if (nonce > 0xffffffffL) {
+                    extraCounter = extraCounter.add(BigInteger.ONE)
+                    activeJob = null // rebuild coinbase, Merkle root and header for the next extranonce2
+                }
             }
         } catch (e: Exception) {
             lastMessage = e.message ?: "Mining error"
