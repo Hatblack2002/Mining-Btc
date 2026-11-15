@@ -18,6 +18,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -370,6 +371,8 @@ class MainActivity : Activity() {
         feedRateHz = 30
         service?.setHashFeedRate(30)
         root.removeAllViews()
+        listOf(rate, status, bestShareDiff, bestShareBits, accepted, rejected, thermalBar, networkTargetLabel, stopButton)
+            .forEach { view -> (view.parent as? ViewGroup)?.removeView(view) }
         val metrics = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(LinearLayout(this@MainActivity).apply {
