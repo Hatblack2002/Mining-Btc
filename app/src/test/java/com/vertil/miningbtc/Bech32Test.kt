@@ -15,7 +15,7 @@ class Bech32Test {
     }
 
     @Test fun acceptsMainnetWitnessV1Taproot() {
-        assertTrue(Bech32.isValidMainnet("bc1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpqqenm"))
+        assertTrue(Bech32.isValidMainnet("bc1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpqqenm"))
     }
 
     @Test fun acceptsUppercaseAddress() {
