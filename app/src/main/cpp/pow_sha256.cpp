@@ -89,7 +89,7 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
     }
     // Sample one hash per 65536 nonces. Workers keep samples locally, so
     // the hot hash loop performs no locks and no JNI callbacks.
-    if((i & 8191u)==0u) localFeed.push_back({nonce,digest});
+    if((i & 65535u)==0u) { localFeed[localFeedCount % localFeed.size()]={nonce,digest}; localFeedCount++; }
     if(digest_meets_stratum_target(digest,target)) local.push_back(nonce);
     if(digest_meets_stratum_target(digest,blockTarget)) localBlocks.push_back(nonce);
    }
