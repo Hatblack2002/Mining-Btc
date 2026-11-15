@@ -6,6 +6,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.math.BigInteger
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.MessageDigest
@@ -68,8 +69,21 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     private fun runSession() {
         try {
             require(config.host.isNotBlank()) { "Pool host is required" }
-            val plain = Socket()
-            plain.connect(InetSocketAddress(config.host, config.port), 15000)
+            val addresses = InetAddress.getAllByName(config.host).sortedBy { if (it is java.net.Inet6Address) 0 else 1 }
+            var connected: Socket? = null
+            var connectFailure: Exception? = null
+            for (address in addresses) {
+                val candidate = Socket()
+                try {
+                    candidate.connect(InetSocketAddress(address, config.port), 15000)
+                    connected = candidate
+                    break
+                } catch (e: Exception) {
+                    connectFailure = e
+                    try { candidate.close() } catch (_: Exception) {}
+                }
+            }
+            val plain = connected ?: throw IllegalStateException("IPv6/IPv4 connection failed: " + (connectFailure?.message ?: "no resolved addresses"), connectFailure)
             plain.soTimeout = 0
             val socket = if (config.tls) {
                 val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
@@ -123,7 +137,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             var extraCounter = BigInteger.ZERO
             var activeJob: PoolJob? = null
             var headerPrefix: ByteArray? = null
-            var target = targetFor(difficulty.get())
+            val target = AtomicReference(targetFor(difficulty.get()))
             var sessionHashes = 0L
             var lastRateAt = System.nanoTime()
             var lastRateHashes = 0L
@@ -144,7 +158,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     for (branch in job.branches) merkle = doubleSha(merkle + hex(branch), digest1, digest2)
                     headerPrefix = le(job.version, 4) + swapWords(hex(job.prevhash)) + merkle +
                         le(job.ntime, 4) + le(job.nbits, 4)
-                    target = targetFor(difficulty.get())
+                    target.set(targetFor(difficulty.get()))
                     lastMessage = "Mining job ${job.id}"
                     emit("Mining")
                 }
@@ -161,7 +175,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     val hash = digest2.digest(digest1.digest(header))
                     hashes.incrementAndGet()
                     sessionHashes++
-                    if (meetsTarget(hash, target)) {
+                    if (meetsTarget(hash, target.get())) {
                         val id = requestId.incrementAndGet()
                         val nonceHex = String.format(Locale.US, "%08x", nonce)
                         val params = JSONArray().put(config.username).put(job.id).put(currentExtra)
@@ -211,7 +225,9 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     }
                     "mining.set_difficulty" -> {
                         val p = obj.getJSONArray("params")
-                        difficulty.set(p.getDouble(0).coerceAtLeast(0.00000001))
+                        val nextDifficulty = p.getDouble(0).coerceAtLeast(0.00000001)
+                        difficulty.set(nextDifficulty)
+                        target.set(targetFor(nextDifficulty))
                     }
                     "client.reconnect" -> {
                         lastMessage = "Pool requested reconnect; restart session"
