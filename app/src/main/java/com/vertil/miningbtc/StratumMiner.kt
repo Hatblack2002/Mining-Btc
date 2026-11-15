@@ -162,7 +162,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             var lastRateHashes = 0L
             var lastPingAt = System.nanoTime()
 
-            while (running.get()) {
+            while (running.get() && sessionConnected) {
                 val job = jobRef.get()
                 if (job == null) {
                     Thread.sleep(100)
