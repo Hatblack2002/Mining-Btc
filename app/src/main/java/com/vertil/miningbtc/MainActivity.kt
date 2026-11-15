@@ -278,7 +278,7 @@ class MainActivity : Activity() {
         }
         listOf("HOST" to hostInput, "PUERTO" to portInput, "WALLET (BECH32)" to userInput,
             "WORKER" to workerNameInput, "PASSWORD" to passInput).forEach { (title, input) ->
-            p.addView(label(title, 9f, muted, true).padTop(8))
+            p.addView(label(title, 9f, muted, true).apply { tag = "field_label_$title" }.padTop(8))
             p.addView(input)
         }
         p.addView(tlsInput)
@@ -344,6 +344,9 @@ class MainActivity : Activity() {
         configSaved = true
         listOf(hostInput, portInput, userInput, workerNameInput, passInput, tlsInput, errorView)
             .forEach { it.visibility = View.GONE }
+        listOf("HOST", "PUERTO", "WALLET (BECH32)", "WORKER", "PASSWORD").forEach { title ->
+            stratumPanel.findViewWithTag<View>("field_label_$title")?.visibility = View.GONE
+        }
         stratumPanel.findViewWithTag<View>("save_config")?.visibility = View.GONE
         startButton.visibility = View.VISIBLE
     }
@@ -355,6 +358,9 @@ class MainActivity : Activity() {
         startButton.visibility = if (configSaved) View.VISIBLE else View.GONE
         if (configSaved) {
             listOf(hostInput, portInput, userInput, workerNameInput, passInput, tlsInput).forEach { it.visibility = View.GONE }
+            listOf("HOST", "PUERTO", "WALLET (BECH32)", "WORKER", "PASSWORD").forEach { title ->
+                stratumPanel.findViewWithTag<View>("field_label_$title")?.visibility = View.GONE
+            }
             stratumPanel.findViewWithTag<View>("save_config")?.visibility = View.GONE
         }
     }
