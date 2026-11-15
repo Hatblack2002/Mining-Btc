@@ -1,6 +1,8 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <string>
+#include <algorithm>
 
 namespace powlab {
 using Digest = std::array<uint8_t, 32>;
