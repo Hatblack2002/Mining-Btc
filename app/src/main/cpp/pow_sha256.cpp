@@ -108,6 +108,21 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
  std::sort(feed.begin(),feed.end(),[](const FeedSample& a,const FeedSample& b){return a.nonce<b.nonce;});
  return {scanned.load(std::memory_order_relaxed),std::move(found),std::move(blocks),bestNonce,bestDigest,hasBest,std::move(feed)};
 }
+static std::mutex bestHashMutex;
+static BestHashSnapshot globalBestHash{0,{},false};
+void record_best_hash(const ScanResult& scan) {
+ if(!scan.has_best) return;
+ std::lock_guard<std::mutex> lock(bestHashMutex);
+ if(!globalBestHash.has_best || digest_numeric_less(scan.best_digest,globalBestHash.digest)) {
+  globalBestHash.nonce=scan.best_nonce;
+  globalBestHash.digest=scan.best_digest;
+  globalBestHash.has_best=true;
+ }
+}
+BestHashSnapshot get_best_hash() {
+ std::lock_guard<std::mutex> lock(bestHashMutex);
+ return globalBestHash;
+}
 bool digest_meets_target_early(const Digest& h,const Digest& t) {
  // Bitcoin interprets the raw SHA digest as a little-endian uint256.
  // Reject on the most-significant (last) 32-bit word before comparing the remainder.
