@@ -163,6 +163,13 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             var lastPingAt = System.nanoTime()
 
             while (running.get() && sessionConnected) {
+                val loopNow = System.nanoTime()
+                if (loopNow - lastPingAt >= 30_000_000_000L) {
+                    val pingId = requestId.incrementAndGet()
+                    pingSentAt[pingId] = loopNow
+                    send(JSONObject().put("id", pingId).put("method", "mining.ping").put("params", JSONArray()))
+                    lastPingAt = loopNow
+                }
                 val job = jobRef.get()
                 if (job == null) {
                     Thread.sleep(100)
@@ -207,12 +214,6 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     }
                     nonce++
                     val now = System.nanoTime()
-                    if (now - lastPingAt >= 30_000_000_000L) {
-                        val pingId = requestId.incrementAndGet()
-                        pingSentAt[pingId] = now
-                        send(JSONObject().put("id", pingId).put("method", "mining.ping").put("params", JSONArray()))
-                        lastPingAt = now
-                    }
                     if (now - lastRateAt >= 1_000_000_000L) {
                         val delta = sessionHashes - lastRateHashes
                         val rate = delta * 1_000_000_000.0 / (now - lastRateAt)
