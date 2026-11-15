@@ -48,8 +48,9 @@ class MainActivity : Activity() {
             setBackgroundColor(bg)
         }
         page.addView(label("₿  MINING BTC", 23f, white, true))
-        page.addView(label("VERTIL  /  STRATUM V1 PROOF OF WORK", 10f, muted, true))
-            .also { it.setPadding(0, dp(3), 0, dp(25)) }
+        page.addView(label("VERTIL  /  STRATUM V1 PROOF OF WORK", 10f, muted, true).apply {
+            setPadding(0, dp(3), 0, dp(25))
+        })
 
         page.addView(label("LIVE MINING PERFORMANCE", 11f, muted, true).padTop(8))
         val metrics = card(20)
@@ -64,7 +65,8 @@ class MainActivity : Activity() {
         rejected = right.second
         row.addView(left.first, LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(right.first, LinearLayout.LayoutParams(0, -2, 1f))
-        metrics.addView(row.padTop(18))
+        row.setPadding(0, dp(18), 0, 0)
+        metrics.addView(row)
         page.addView(metrics)
 
         page.addView(label("POOL CONNECTION", 11f, muted, true).padTop(24).padBottom(10))
