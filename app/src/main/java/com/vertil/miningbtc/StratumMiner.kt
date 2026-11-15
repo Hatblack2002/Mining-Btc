@@ -35,6 +35,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     private val running = AtomicBoolean(false)
     private val jobRef = AtomicReference<PoolJob?>(null)
     private val difficulty = AtomicReference(1.0)
+    private val targetRef = AtomicReference(targetFor(1.0))
     private val extranonce1 = AtomicReference("")
     private val extranonce2Size = AtomicReference(4)
     private val hashes = AtomicLong(0)
@@ -137,7 +138,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             var extraCounter = BigInteger.ZERO
             var activeJob: PoolJob? = null
             var headerPrefix: ByteArray? = null
-            val target = AtomicReference(targetFor(difficulty.get()))
+            targetRef.set(targetFor(difficulty.get()))
             var sessionHashes = 0L
             var lastRateAt = System.nanoTime()
             var lastRateHashes = 0L
@@ -158,7 +159,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     for (branch in job.branches) merkle = doubleSha(merkle + hex(branch), digest1, digest2)
                     headerPrefix = le(job.version, 4) + swapWords(hex(job.prevhash)) + merkle +
                         le(job.ntime, 4) + le(job.nbits, 4)
-                    target.set(targetFor(difficulty.get()))
+                    targetRef.set(targetFor(difficulty.get()))
                     lastMessage = "Mining job ${job.id}"
                     emit("Mining")
                 }
@@ -175,7 +176,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     val hash = digest2.digest(digest1.digest(header))
                     hashes.incrementAndGet()
                     sessionHashes++
-                    if (meetsTarget(hash, target.get())) {
+                    if (meetsTarget(hash, targetRef.get())) {
                         val id = requestId.incrementAndGet()
                         val nonceHex = String.format(Locale.US, "%08x", nonce)
                         val params = JSONArray().put(config.username).put(job.id).put(currentExtra)
@@ -227,7 +228,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                         val p = obj.getJSONArray("params")
                         val nextDifficulty = p.getDouble(0).coerceAtLeast(0.00000001)
                         difficulty.set(nextDifficulty)
-                        target.set(targetFor(nextDifficulty))
+                        targetRef.set(targetFor(nextDifficulty))
                     }
                     "client.reconnect" -> {
                         lastMessage = "Pool requested reconnect; restart session"
