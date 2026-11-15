@@ -31,6 +31,8 @@ import java.util.Locale
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
+    private val exportCsvRequestCode = 501
+    private var pendingExportText = ""
     private val bg = Color.rgb(8, 14, 23)
     private val panel = Color.rgb(17, 27, 40)
     private val muted = Color.rgb(145, 163, 184)
@@ -211,6 +213,20 @@ class MainActivity : Activity() {
             unbindService(connection)
             bound = false
             service = null
+        }
+    }
+
+    @Deprecated("Uses the platform document picker for CSV export")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == exportCsvRequestCode && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            try {
+                contentResolver.openOutputStream(uri)?.use { it.write(pendingExportText.toByteArray(Charsets.UTF_8)) }
+                toast("CSV exportado correctamente")
+            } catch (e: Exception) {
+                toast("No se pudo exportar CSV: ${e.message}")
+            }
         }
     }
 
@@ -614,12 +630,13 @@ class MainActivity : Activity() {
                 append("${row.timestampMs},${row.nonce},${row.bits},${row.difficulty},${row.hashHex},${row.status}\n")
             }
         }
-        val send = Intent(Intent.ACTION_SEND).apply {
+        pendingExportText = telemetry + feed
+        val create = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
             type = "text/csv"
-            putExtra(Intent.EXTRA_SUBJECT, "Mining BTC telemetry")
-            putExtra(Intent.EXTRA_TEXT, telemetry + feed)
+            putExtra(Intent.EXTRA_TITLE, "mining-btc-telemetry.csv")
         }
-        startActivity(Intent.createChooser(send, "Exportar telemetría y hash feed"))
+        startActivityForResult(create, exportCsvRequestCode)
     }
 
     private fun toast(msg: String) {
