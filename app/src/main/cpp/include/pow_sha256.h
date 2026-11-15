@@ -18,7 +18,7 @@ Midstate make_midstate(const uint8_t header[80], bool use_arm);
 Digest hash_header_nonce(const uint8_t header[80], uint32_t nonce, const Midstate& midstate, bool use_arm);
 bool digest_meets_target_early(const Digest& digest, const Digest& target);
 bool digest_meets_stratum_target(const Digest& digest, const Digest& target);
-struct ScanResult { uint64_t hashes; std::vector<uint32_t> shares; };
+struct ScanResult { uint64_t hashes; std::vector<uint32_t> shares; uint32_t best_nonce; Digest best_digest; bool has_best; };
 ScanResult scan_nonce_batch(const uint8_t header[80], uint32_t start, uint32_t count, unsigned threads, bool use_arm, const Digest& target);
 std::string self_test_report();
 }
