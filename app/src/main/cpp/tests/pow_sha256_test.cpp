@@ -32,5 +32,11 @@ int main() {
   std::cerr<<"FAIL extranonce2 epoch rotation\\n";return 4;
  }
  std::cout<<"PASS disjoint nonce range boundary\\nPASS extranonce2 epoch rotation\\n";
+ Digest candidate{}; Digest limit{}; limit[0]=0x10;
+ candidate[0]=0x11;
+ if(digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target rejection\\n";return 5;}
+ candidate[0]=0x0f;
+ if(!digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target acceptance\\n";return 6;}
+ std::cout<<"PASS early target word rejection\\n";
  return 0;
 }
