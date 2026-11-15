@@ -65,6 +65,12 @@ int main() {
   std::cerr<<"FAIL native hash feed sampling\\n";return 11;
  }
  std::cout<<"PASS native parallel batch coverage (8 workers)\\n";
+ record_best_hash(batch);
+ auto bestSnapshot=get_best_hash();
+ if(!bestSnapshot.has_best || bestSnapshot.nonce!=portableBestNonce || bestSnapshot.digest!=portableBest) {
+  std::cerr<<"FAIL process-wide best hash snapshot\\n";return 13;
+ }
+ std::cout<<"PASS process-wide best hash snapshot\\n";
  std::cout<<"PASS best hash matches portable SHA-256d reference for 513 known nonces\\n";
  std::cout<<"PASS worker-local hash feed sampling\\n";
  Digest zeroTarget{};
