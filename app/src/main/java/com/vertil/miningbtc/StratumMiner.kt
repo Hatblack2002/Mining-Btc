@@ -30,7 +30,8 @@ data class MinerStats(
     val difficulty: Double = 0.0,
     val message: String = "",
     val latencyMs: Long = -1,
-    val rejectionReason: String = ""
+    val rejectionReason: String = "",
+    val difficultySuggestion: String = ""
 )
 
 class StratumMiner(private val config: PoolConfig, private val onStats: (MinerStats) -> Unit) {
@@ -56,6 +57,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     private val nativeBatchSize = 262144
     @Volatile private var rejectionReason = ""
     @Volatile private var lastMessage = "Connecting"
+    @Volatile private var difficultySuggestionStatus = "Not sent"
 
     private data class PoolJob(
         val id: String, val prevhash: String, val coinb1: String, val coinb2: String,
@@ -153,13 +155,14 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             }
 
             val suggestId = requestId.incrementAndGet()
+            difficultySuggestionStatus = "Sent mining.suggest_difficulty(${config.suggestedDifficulty})"
             suggestDifficultyRequestId.set(suggestId)
             send(JSONObject().put("id", suggestId).put("method", "mining.suggest_difficulty")
                 .put("params", JSONArray().put(config.suggestedDifficulty.coerceAtLeast(0.00000001))))
             thread(name = "stratum-difficulty-timeout", isDaemon = true) {
                 try { Thread.sleep(5000) } catch (_: InterruptedException) {}
                 if (suggestDifficultyRequestId.compareAndSet(suggestId, -1)) {
-                    lastMessage = "Pool did not answer mining.suggest_difficulty; treated as unsupported"
+                    difficultySuggestionStatus = "Pool did not answer mining.suggest_difficulty; unsupported or ignored"
                     emit("Mining")
                 }
             }
@@ -201,7 +204,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     headerPrefix = le(job.version, 4) + swapWords(hex(job.prevhash)) + merkle +
                         le(job.ntime, 4) + le(job.nbits, 4)
                     targetRef.set(targetFor(difficulty.get()))
-                    lastMessage = "Mining job ${job.id}"
+                    lastMessage = "Native SHA-256d ${if (useArm) "ARMv8 SHA2" else "portable"} · $nativeThreads threads · job ${job.id}"
                     emit("Mining")
                 }
                 val prefix = headerPrefix ?: continue
@@ -213,14 +216,18 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                 while (running.get() && jobRef.get() === activeJob && nonce <= 0xffffffffL) {
                     val remaining = 0x1_0000_0000L - nonce
                     val batchCount = minOf(nativeBatchSize.toLong(), remaining).toInt()
-                    val scanTarget = targetRef.get()
-                    val scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, nativeThreads, useArm, scanTarget)
+                    var scanTarget = targetRef.get()
+                    var scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, nativeThreads, useArm, scanTarget)
+                    while (targetRef.get() !== scanTarget && jobRef.get() === activeJob) {
+                        scanTarget = targetRef.get()
+                        scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, nativeThreads, useArm, scanTarget)
+                    }
                     val scanned = scan.getOrElse(0) { 0L }
                     if (scanned <= 0L) error("Native SHA-256d scanner returned no progress")
+                    if (jobRef.get() !== activeJob) break
                     hashes.addAndGet(scanned)
                     sessionHashes += scanned
                     nonce += scanned
-                    if (jobRef.get() !== activeJob) break
                     val shareCount = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
                     for (index in 0 until shareCount) {
                         val shareNonce = scan.getOrElse(index + 2) { -1L }
@@ -299,12 +306,13 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                 } else if (id == suggestDifficultyRequestId.get()) {
                     suggestDifficultyRequestId.set(-1)
                     val error = obj.opt("error")
-                    lastMessage = if (error == null || error == JSONObject.NULL) {
+                    difficultySuggestionStatus = if (error == null || error == JSONObject.NULL) {
                         if (obj.optBoolean("result")) "Pool accepted suggested difficulty ${config.suggestedDifficulty}"
                         else "Pool ignored suggested difficulty request"
                     } else {
                         "Pool rejected mining.suggest_difficulty: ${error}"
                     }
+                    lastMessage = difficultySuggestionStatus
                     emit("Mining")
                 } else if (pingSentAt.containsKey(id)) {
                     val sentAt = pingSentAt.remove(id) ?: 0L
@@ -351,7 +359,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     }
 
     private fun emit(state: String, rate: Double = 0.0) {
-        onStats(MinerStats(state, rate, hashes.get(), accepted.get(), rejected.get(), difficulty.get(), lastMessage, latencyMs.get(), rejectionReason))
+        onStats(MinerStats(state, rate, hashes.get(), accepted.get(), rejected.get(), difficulty.get(), lastMessage, latencyMs.get(), rejectionReason, difficultySuggestionStatus))
     }
 
     private fun hex(value: String): ByteArray {
