@@ -29,7 +29,7 @@ class Bech32Test {
 }
 
 class WalletConfigTest {
-    private val wallet = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    private val wallet = "bc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq9e75rs"
 
     @Test fun restoresWalletFromNewDedicatedPreference() {
         assertEquals(wallet, WalletConfig.restoreWallet(wallet, "other.worker"))
