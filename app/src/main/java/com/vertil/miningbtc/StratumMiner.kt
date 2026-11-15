@@ -179,6 +179,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             var lastRateAt = System.nanoTime()
             var lastRateHashes = 0L
             var lastPingAt = System.nanoTime()
+            val useArm = NativePowEngine.nativeCapabilities().contains("arm64_sha2=true")
 
             while (running.get() && socketRef.get() === socket && !socket.isClosed) {
                 val loopNow = System.nanoTime()
@@ -212,7 +213,6 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                 System.arraycopy(prefix, 0, header, 0, 76)
                 val currentExtra = extraCounter.toString(16).padStart(extranonce2Size.get() * 2, '0')
                     .takeLast(extranonce2Size.get() * 2)
-                val useArm = NativePowEngine.nativeCapabilities().contains("arm64_sha2=true")
                 while (running.get() && jobRef.get() === activeJob && nonce <= 0xffffffffL) {
                     val remaining = 0x1_0000_0000L - nonce
                     val batchCount = minOf(nativeBatchSize.toLong(), remaining).toInt()
