@@ -39,12 +39,11 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeScanBatch(JNIEnv* env,jclass,jby
  Digest target,blockTarget;for(int i=0;i<32;i++){target[size_t(i)]=uint8_t(targetRaw[i]);blockTarget[size_t(i)]=uint8_t(blockTargetRaw[i]);}
  ScanResult scan=scan_nonce_batch(header,uint32_t(startNonce),uint32_t(nonceCount),unsigned(requested),arm,target,blockTarget);
  record_best_hash(scan);
- std::vector<jlong> values;values.reserve(scan.shares.size()+scan.blocks.size()+12+scan.feed.size()*9);
+ std::vector<jlong> values;values.reserve(scan.shares.size()+scan.blocks.size()+3+scan.feed.size()*9);
  values.push_back(jlong(scan.hashes));values.push_back(jlong(scan.shares.size()));
  for(uint32_t nonce:scan.shares) values.push_back(jlong(nonce));
  values.push_back(jlong(scan.blocks.size()));
  for(uint32_t nonce:scan.blocks) values.push_back(jlong(nonce));
- values.push_back(scan.has_best?jlong(scan.best_nonce):jlong(-1));
  auto appendDigest=[&values](const Digest& digest) {
   for(int word=0;word<8;word++) {
    const int i=word*4;
@@ -55,7 +54,6 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeScanBatch(JNIEnv* env,jclass,jby
    values.push_back(jlong(packed));
   }
  };
- appendDigest(scan.best_digest);
  values.push_back(jlong(scan.feed.size()));
  for(const FeedSample& sample:scan.feed) {
   values.push_back(jlong(sample.nonce));
