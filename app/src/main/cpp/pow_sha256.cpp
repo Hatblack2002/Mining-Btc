@@ -87,7 +87,7 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
     if(!localHasBest || digest_numeric_less(digest,localBest)) {
      localBest=digest; localBestNonce=nonce; localHasBest=true;
     }
-    // Sample one hash per 8192 nonces. Workers keep samples locally, so
+    // Sample one hash per 65536 nonces. Workers keep samples locally, so
     // the hot hash loop performs no locks and no JNI callbacks.
     if((i & 8191u)==0u) localFeed.push_back({nonce,digest});
     if(digest_meets_stratum_target(digest,target)) local.push_back(nonce);
