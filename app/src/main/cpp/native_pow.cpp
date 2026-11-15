@@ -4,7 +4,6 @@
 #include <thread>
 #include <vector>
 #include <algorithm>
-#include <pthread.h>
 #include <sched.h>
 #include <fstream>
 #include <string>
@@ -36,7 +35,7 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeBenchmark(JNIEnv* env,jclass,jby
  uint8_t header[80];for(int i=0;i<80;i++)header[i]=uint8_t(raw[i]);
  const Midstate mid=make_midstate(header,arm);
  const unsigned hc=std::max(1u,std::thread::hardware_concurrency());
- const unsigned count=std::max(1,std::min<int>(requested>0?requested:int(hc),int(hc)));
+ const unsigned count=static_cast<unsigned>(std::max(1,std::min<int>(requested>0?requested:int(hc),int(hc))));
  std::atomic<uint64_t> hashes{0};
  NonceScheduler scheduler(2048);
  std::vector<std::atomic<uint64_t>> counters(count);
@@ -54,7 +53,7 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeBenchmark(JNIEnv* env,jclass,jby
  for(unsigned t=0;t<count;t++)workers.emplace_back([&,t]{
   if(affinityMode!=0 && !order.empty()) {
    cpu_set_t set;CPU_ZERO(&set);CPU_SET(order[t%order.size()],&set);
-   (void)pthread_setaffinity_np(pthread_self(),sizeof(set),&set);
+   (void)sched_setaffinity(0,sizeof(set),&set);
   }
   uint64_t local=0;
   while(std::chrono::steady_clock::now()<until) {
