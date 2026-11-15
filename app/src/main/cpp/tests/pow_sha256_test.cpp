@@ -48,7 +48,24 @@ int main() {
  if(batch.hashes!=513 || batch.shares.size()!=513 || batch.shares.front()!=100 || batch.shares.back()!=612) {
   std::cerr<<"FAIL native parallel batch scan coverage\\n";return 8;
  }
+ Digest portableBest{}; uint32_t portableBestNonce=0; bool havePortableBest=false;
+ auto lessNumeric=[](const Digest& a,const Digest& b) {
+  for(int i=31;i>=0;i--) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
+  return false;
+ };
+ for(uint32_t n=100;n<613;n++) {
+  const Digest d=hash_header_nonce(header,n,mid,false);
+  if(!havePortableBest || lessNumeric(d,portableBest)) { portableBest=d; portableBestNonce=n; havePortableBest=true; }
+ }
+ if(!batch.has_best || batch.best_nonce!=portableBestNonce || batch.best_digest!=portableBest) {
+  std::cerr<<"FAIL native best hash differs from portable reference\\n";return 10;
+ }
+ if(batch.feed.empty() || batch.feed.front().nonce!=100) {
+  std::cerr<<"FAIL native hash feed sampling\\n";return 11;
+ }
  std::cout<<"PASS native parallel batch coverage (8 workers)\\n";
+ std::cout<<"PASS best hash matches portable SHA-256d reference for 513 known nonces\\n";
+ std::cout<<"PASS worker-local hash feed sampling\\n";
  Digest zeroTarget{};
  auto rejectedBatch=scan_nonce_batch(header,100,128,8,false,zeroTarget);
  if(rejectedBatch.hashes!=128 || !rejectedBatch.shares.empty()) {
