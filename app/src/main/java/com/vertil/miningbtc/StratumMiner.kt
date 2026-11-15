@@ -68,6 +68,19 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     }
 
     private fun runSession() {
+        var attempt = 0
+        while (running.get()) {
+            runSingleSession()
+            if (!running.get()) break
+            val delaySeconds = (1L shl attempt.coerceAtMost(5)).coerceAtMost(30L)
+            lastMessage = "Reconnecting in " + delaySeconds + "s"
+            emit("Reconnecting")
+            try { Thread.sleep(delaySeconds * 1000L) } catch (_: InterruptedException) { break }
+            attempt++
+        }
+    }
+
+    private fun runSingleSession() {
         try {
             require(config.host.isNotBlank()) { "Pool host is required" }
             val addresses = InetAddress.getAllByName(config.host).sortedBy { if (it is java.net.Inet6Address) 0 else 1 }
@@ -105,7 +118,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                 } catch (_: Exception) {}
                 if (running.get()) {
                     lastMessage = "Pool connection lost"
-                    running.set(false)
+                    try { socketRef.get()?.close() } catch (_: Exception) {}
                     emit("Disconnected")
                 }
             }
@@ -203,9 +216,8 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             }
         } catch (e: Exception) {
             lastMessage = e.message ?: "Mining error"
-            emit("Error")
+            if (running.get()) emit("Error")
         } finally {
-            running.set(false)
             try { socketRef.getAndSet(null)?.close() } catch (_: Exception) {}
             writerRef.set(null)
         }
@@ -231,8 +243,8 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                         targetRef.set(targetFor(nextDifficulty))
                     }
                     "client.reconnect" -> {
-                        lastMessage = "Pool requested reconnect; restart session"
-                        running.set(false)
+                        lastMessage = "Pool requested reconnect"
+                        try { socketRef.get()?.close() } catch (_: Exception) {}
                     }
                 }
             } else {
