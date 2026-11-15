@@ -732,13 +732,13 @@ class StratumMiner(
      * have been a valid block on mainnet.
      */
     private fun computeDifficulty(hash: ByteArray): Double {
-        val leBytes = ByteArray(32) { hash[31 - it] }
-        val h = BigInteger(1, leBytes)
-        if (h.signum() == 0) return Double.POSITIVE_INFINITY
-        val maxTarget = BigInteger("00000000ffff0000000000000000000000000000000000000000000000000000", 16)
-        return maxTarget.toBigDecimal()
-            .divide(h.toBigDecimal(), 6, RoundingMode.HALF_UP)
-            .toDouble()
+        // Fast double-precision estimate using only the most-significant 64 bits
+        // of the Bitcoin uint256. This avoids BigInteger division in the hash loop.
+        var high64 = 0.0
+        for (i in 31 downTo 24) high64 = high64 * 256.0 + (hash[i].toInt() and 0xff)
+        if (high64 == 0.0) return Double.POSITIVE_INFINITY
+        // difficulty-1 target's leading 64-bit word is 0x00000000ffff0000.
+        return 4_294_901_760.0 / high64
     }
 
     /** Leading zero bits of the hash in big-endian display order. */
@@ -756,9 +756,14 @@ class StratumMiner(
     }
 
     private fun toHex(bytes: ByteArray): String {
-        val sb = StringBuilder(bytes.size * 2)
-        for (b in bytes) sb.append(String.format(Locale.US, "%02x", b.toInt() and 0xff))
-        return sb.toString()
+        val alphabet = "0123456789abcdef"
+        val chars = CharArray(bytes.size * 2)
+        for (i in bytes.indices) {
+            val value = bytes[i].toInt() and 0xff
+            chars[i * 2] = alphabet[value ushr 4]
+            chars[i * 2 + 1] = alphabet[value and 15]
+        }
+        return String(chars)
     }
 
     companion object {
