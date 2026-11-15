@@ -5,12 +5,14 @@ plugins {
 android {
     namespace = "com.vertil.miningbtc"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
     defaultConfig {
         applicationId = "com.vertil.miningbtc"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -18,4 +20,7 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildTypes { release { isMinifyEnabled = false } }
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
+    }
 }
