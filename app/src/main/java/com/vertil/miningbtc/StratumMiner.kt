@@ -107,7 +107,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     try { candidate.close() } catch (_: Exception) {}
                 }
             }
-            val plain = connected ?: throw IllegalStateException("IPv6/IPv4 connection failed: " + (connectFailure?.message ?: "no resolved addresses"), connectFailure)
+            val plain = connected ?: throw IllegalStateException("Unable to connect to ${config.host}:${config.port} over IPv4 or IPv6: " + (connectFailure?.message ?: "no resolved addresses"), connectFailure)
             plain.soTimeout = 0
             val socket = if (config.tls) {
                 val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
