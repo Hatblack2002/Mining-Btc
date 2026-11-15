@@ -7,24 +7,24 @@ import org.junit.Test
 
 class Bech32Test {
     @Test fun acceptsMainnetWitnessV0P2wpkh() {
-        assertTrue(Bech32.isValidMainnet("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"))
+        assertTrue(Bech32.isValidMainnet("bc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq9e75rs"))
     }
 
     @Test fun acceptsMainnetWitnessV0P2wsh() {
-        assertTrue(Bech32.isValidMainnet("bc1qqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0szrtjt7"))
+        assertTrue(Bech32.isValidMainnet("bc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqthqst8"))
     }
 
     @Test fun acceptsMainnetWitnessV1Taproot() {
-        assertTrue(Bech32.isValidMainnet("bc1pqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sg5tmnz"))
+        assertTrue(Bech32.isValidMainnet("bc1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpqqenm"))
     }
 
     @Test fun acceptsUppercaseAddress() {
-        assertTrue(Bech32.isValidMainnet("BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4"))
+        assertTrue(Bech32.isValidMainnet("BC1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ9E75RS"))
     }
 
     @Test fun rejectsWrongNetworkAndChecksumVariant() {
-        assertFalse(Bech32.isValidMainnet("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"))
-        assertFalse(Bech32.isValidMainnet("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kemeawh"))
+        assertFalse(Bech32.isValidMainnet("tb1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq9e75rs"))
+        assertFalse(Bech32.isValidMainnet("bc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq9e75rt"))
     }
 }
 
