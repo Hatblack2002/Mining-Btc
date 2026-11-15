@@ -65,8 +65,8 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeScanBatch(JNIEnv* env,jclass,jby
 }
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_com_vertil_miningbtc_NativePowEngine_nativeGetLastScanWorkerCount(JNIEnv* env,jclass) {
- jlong values[2]={jlong(last_scan_worker_count()),jlong(last_scan_allowed_cpu_count())};
- jlongArray out=env->NewLongArray(2);env->SetLongArrayRegion(out,0,2,values);return out;
+ jlong values[3]={jlong(last_scan_worker_count()),jlong(last_scan_allowed_cpu_count()),jlong(last_scan_affinity_worker_count())};
+ jlongArray out=env->NewLongArray(3);env->SetLongArrayRegion(out,0,3,values);return out;
 }
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_com_vertil_miningbtc_NativePowEngine_nativePollBestHash(JNIEnv* env,jclass) {
