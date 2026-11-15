@@ -36,6 +36,7 @@ jobs:
           cmake -S app/src/main/cpp/tests -B build/native-tests
           cmake --build build/native-tests --parallel
           ctest --test-dir build/native-tests --output-on-failure
+          ./build/native-tests/pow_sha256_test
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
       - name: Upload debug APK
