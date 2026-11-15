@@ -37,6 +37,8 @@ jobs:
           cmake --build build/native-tests --parallel
           ctest --test-dir build/native-tests --output-on-failure
           ./build/native-tests/pow_sha256_test
+      - name: Validate local Stratum mock server
+        run: python3 -m py_compile tools/stratum_mock_pool.py
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug --stacktrace --info 2>&1 | tee gradle-build.log
       - name: Upload build diagnostics on failure
