@@ -72,9 +72,10 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             plain.connect(InetSocketAddress(config.host, config.port), 15000)
             plain.soTimeout = 0
             val socket = if (config.tls) {
-                SSLSocketFactory.getDefault().createSocket(plain, config.host, config.port, true).apply {
-                    startHandshake()
-                }
+                val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
+                    .createSocket(plain, config.host, config.port, true) as javax.net.ssl.SSLSocket
+                sslSocket.startHandshake()
+                sslSocket
             } else plain
             socketRef.set(socket)
             val writer = PrintWriter(socket.getOutputStream(), true)
