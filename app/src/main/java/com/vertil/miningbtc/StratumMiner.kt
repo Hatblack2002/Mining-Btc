@@ -142,6 +142,16 @@ class StratumMiner(
     fun start() {
         if (!running.compareAndSet(false, true)) return
         thread(name = "thermal-monitor", isDaemon = true) { runThermalMonitor() }
+        thread(name = "best-hash-poller", isDaemon = true) {
+            while (running.get()) {
+                try {
+                    if (updateBestFromSnapshot(NativePowEngine.nativePollBestHash())) {
+                        emit("Mining", lastReportedRate)
+                    }
+                } catch (_: Exception) {}
+                try { Thread.sleep(500) } catch (_: InterruptedException) { break }
+            }
+        }
         thread(name = "stratum-connection") { runSession() }
     }
 
@@ -568,26 +578,30 @@ class StratumMiner(
         }
     }
 
-    /** Consume best-hash and sampled feed data returned once per native batch. */
+    /** Read the process-wide native best hash at 2 Hz; no per-hash JNI callbacks. */
+    private fun updateBestFromSnapshot(snapshot: LongArray): Boolean {
+        if (snapshot.size < 9) return false
+        val nonce = snapshot[0]
+        if (nonce < 0L) return false
+        val digest = digestFromWords(snapshot, 1)
+        val candidateDifficulty = computeDifficulty(digest)
+        if (candidateDifficulty <= bestShareDifficulty) return false
+        bestShareDifficulty = candidateDifficulty
+        bestShareBits = leadingZeroBits(digest)
+        bestShareHashHex = toHex(digest.reversedArray())
+        bestShareTimestampMs = System.currentTimeMillis()
+        bestShareNonce = nonce
+        lastMessage = "NEW BEST HASH · %.3e diff · %d leading bits · nonce %08x"
+            .format(Locale.US, candidateDifficulty, bestShareBits, nonce)
+        return true
+    }
+
+    /** Consume worker-local hash samples returned once per native batch. */
     private fun updateBestFromNativeBatch(scan: LongArray) {
         val shareCount = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
         val blockCountIndex = shareCount + 2
         val blockCount = scan.getOrElse(blockCountIndex) { 0L }.toInt().coerceIn(0, 1024)
         val bestIndex = blockCountIndex + 1 + blockCount
-        val nonce = scan.getOrElse(bestIndex) { -1L }
-        if (nonce >= 0L) {
-            val digest = digestFromWords(scan, bestIndex + 1)
-            val candidateDifficulty = computeDifficulty(digest)
-            if (candidateDifficulty > bestShareDifficulty) {
-                bestShareDifficulty = candidateDifficulty
-                bestShareBits = leadingZeroBits(digest)
-                bestShareHashHex = toHex(digest.reversedArray())
-                bestShareTimestampMs = System.currentTimeMillis()
-                bestShareNonce = nonce
-                lastMessage = "NEW BEST HASH · %.3e diff · %d leading bits · nonce %08x"
-                    .format(Locale.US, candidateDifficulty, bestShareBits, nonce)
-            }
-        }
         val feedCountIndex = bestIndex + 9
         val feedCount = scan.getOrElse(feedCountIndex) { 0L }.toInt().coerceIn(0, 4096)
         var index = feedCountIndex + 1
