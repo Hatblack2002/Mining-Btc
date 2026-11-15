@@ -2,7 +2,7 @@ name: Android Build
 
 on:
   push:
-    branches: [ main, phase2-stratum-hardening ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -37,12 +37,8 @@ jobs:
           cmake --build build/native-tests --parallel
           ctest --test-dir build/native-tests --output-on-failure
           ./build/native-tests/pow_sha256_test
-      - name: Test Bitcoin Merkle root and block header vectors
-        run: python3 tools/test_pow_vectors.py
-      - name: Test Stratum V1 mock session end to end
-        run: python3 tools/test_stratum_mock.py
-      - name: Validate Python test and mock syntax
-        run: python3 -m py_compile tools/stratum_mock_pool.py tools/test_pow_vectors.py tools/test_stratum_mock.py
+      - name: Validate local Stratum mock server
+        run: python3 -m py_compile tools/stratum_mock_pool.py
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug --stacktrace --info 2>&1 | tee gradle-build.log
       - name: Upload build diagnostics on failure

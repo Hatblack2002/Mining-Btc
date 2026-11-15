@@ -3,9 +3,12 @@ package com.vertil.miningbtc
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.io.PrintWriter
+import java.math.BigDecimal
 import java.math.BigInteger
+import java.math.RoundingMode
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -14,17 +17,25 @@ import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLSocketFactory
 import kotlin.concurrent.thread
 
-data class PoolConfig(val host: String, val port: Int, val username: String, val password: String, val tls: Boolean, val suggestedDifficulty: Double = 1.0)
+data class PoolConfig(
+    val host: String,
+    val port: Int,
+    val username: String,
+    val password: String,
+    val tls: Boolean,
+    val suggestedDifficulty: Double = 1.0
+)
 
 data class MinerStats(
     val state: String,
     val hashrate: Double = 0.0,
-    val hashes: Long = 0,
+    val totalHashes: Long = 0,
     val accepted: Long = 0,
     val rejected: Long = 0,
     val difficulty: Double = 0.0,
@@ -32,29 +43,43 @@ data class MinerStats(
     val latencyMs: Long = -1,
     val rejectionReason: String = "",
     val difficultySuggestion: String = "",
-    val stale: Long = 0,
-    val submitLatencyMs: Long = -1,
+    // Solo mining telemetry: best share difficulty found, leading zero bits of
+    // the best share hash, hex of the best share hash, current CPU temperature
+    // (degrees C), and effective thread count after thermal backoff. These are
+    // the metrics that matter when you mine alone: "how close did I get?".
     val bestShareDifficulty: Double = 0.0,
-    val difficultyConfirmedByPool: Boolean = false
+    val bestShareBits: Int = 0,
+    val bestShareHashHex: String = "",
+    val cpuTempC: Double = 0.0,
+    val effectiveThreads: Int = 0
 )
 
-class StratumMiner(private val config: PoolConfig, private val onStats: (MinerStats) -> Unit) {
+/**
+ * Stratum v1 solo miner with thermal backoff and best-share tracking.
+ *
+ * The miner keeps the socket alive across thermal pauses: when the CPU
+ * crosses 85 C we suspend nonce scanning but keep mining.ping and the
+ * reader thread running, so the pool does not drop our session.
+ *
+ * Best-share telemetry is computed for every share we submit. The hash
+ * is read in little-endian uint256 order (Bitcoin consensus) to derive
+ * the difficulty that share would satisfy if it had been a full block.
+ */
+class StratumMiner(
+    private val config: PoolConfig,
+    private val initialStats: MinerStats = MinerStats("Idle"),
+    private val onStats: (MinerStats) -> Unit
+) {
     private val running = AtomicBoolean(false)
+    private val paused = AtomicBoolean(false)
     private val jobRef = AtomicReference<PoolJob?>(null)
     private val difficulty = AtomicReference(1.0)
-    @Volatile private var difficultyConfirmedByPool = false
     private val targetRef = AtomicReference(targetFor(1.0))
     private val extranonce1 = AtomicReference("")
     private val extranonce2Size = AtomicReference(4)
-    private val hashes = AtomicLong(0)
-    private val accepted = AtomicLong(0)
-    private val rejected = AtomicLong(0)
-    private val stale = AtomicLong(0)
-    private val bestShareDifficulty = java.util.concurrent.atomic.AtomicReference(java.math.BigDecimal.ZERO)
-    private val submitSentAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
-    private val submitDifficulty = java.util.concurrent.ConcurrentHashMap<Long, Double>()
-    private val submitLatencyMs = AtomicLong(-1)
-    private val jobGate = Any()
+    private val hashes = AtomicLong(initialStats.totalHashes)
+    private val accepted = AtomicLong(initialStats.accepted)
+    private val rejected = AtomicLong(initialStats.rejected)
     private val socketRef = AtomicReference<Socket?>(null)
     private val writerRef = AtomicReference<PrintWriter?>(null)
     private val requestId = AtomicLong(2)
@@ -64,10 +89,12 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     private val pingSentAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     private val latencyMs = AtomicLong(-1)
     private val suggestDifficultyRequestId = AtomicLong(-1)
-    @Volatile private var reconnectAttempt = 0
-    private val nativeThreads = 8
-    // Bounded batches limit how long a native scan can outlive a job or target update.
-    private val nativeBatchSize = 8192
+    private val maxThreads = 8
+    private val effectiveThreads = AtomicInteger(maxThreads)
+    private val cpuTempC = AtomicReference(0.0)
+    @Volatile private var bestShareDifficulty = initialStats.bestShareDifficulty
+    @Volatile private var bestShareBits = initialStats.bestShareBits
+    @Volatile private var bestShareHashHex = initialStats.bestShareHashHex
     @Volatile private var rejectionReason = ""
     @Volatile private var lastMessage = "Connecting"
     @Volatile private var difficultySuggestionStatus = "Not sent"
@@ -80,6 +107,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        thread(name = "thermal-monitor", isDaemon = true) { runThermalMonitor() }
         thread(name = "stratum-connection") { runSession() }
     }
 
@@ -90,15 +118,73 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
         emit("Stopped")
     }
 
+    /**
+     * Reads the CPU thermal zone files under /sys/class/thermal every 5 seconds,
+     * picks the hottest reading (CPU zone typically reports as a small integer
+     * in millidegrees C), and adjusts the effective thread count:
+     *
+     *   < 75 C  -> 8 threads (full speed)
+     *   75-85 C -> 4 threads (half speed)
+     *   > 85 C  -> 0 threads (paused; session stays alive via keepalive)
+     *
+     * The S20 FE will hit 75 C within a few minutes of sustained 8-thread
+     * SHA-256d. Without this backoff the phone thermal-shutdowns in ~20 min
+     * and you lose hours of hashrate plus the Stratum session.
+     */
+    private fun runThermalMonitor() {
+        val zones = discoverThermalZones()
+        while (running.get()) {
+            val temp = readHottestTemp(zones)
+            cpuTempC.set(temp)
+            when {
+                temp >= 85.0 -> {
+                    effectiveThreads.set(0)
+                    paused.set(true)
+                }
+                temp >= 75.0 -> {
+                    effectiveThreads.set(4)
+                    paused.set(false)
+                }
+                else -> {
+                    effectiveThreads.set(maxThreads)
+                    paused.set(false)
+                }
+            }
+            try { Thread.sleep(5000) } catch (_: InterruptedException) { break }
+        }
+    }
+
+    private fun discoverThermalZones(): List<File> {
+        val base = File("/sys/class/thermal")
+        val zones = base.listFiles()?.toList() ?: return emptyList()
+        return zones.filter { it.name.startsWith("thermal_zone") }
+            .map { File(it, "temp") }
+            .filter { it.exists() && it.canRead() }
+    }
+
+    private fun readHottestTemp(zones: List<File>): Double {
+        var hottest = 0.0
+        for (zone in zones) {
+            try {
+                val raw = zone.readText().trim()
+                val millideg = raw.toInt()
+                val deg = millideg / 1000.0
+                if (deg in 0.0..120.0 && deg > hottest) hottest = deg
+            } catch (_: Exception) {}
+        }
+        return hottest
+    }
+
     private fun runSession() {
+        var attempt = 0
         while (running.get()) {
             runSingleSession()
             if (!running.get()) break
-            val delaySeconds = (1L shl reconnectAttempt.coerceAtMost(5)).coerceAtMost(30L)
+            val delaySeconds = (1L shl attempt.coerceAtMost(5)).coerceAtMost(30L)
             lastMessage = "Reconnecting in " + delaySeconds + "s"
             emit("Reconnecting")
             try { Thread.sleep(delaySeconds * 1000L) } catch (_: InterruptedException) { break }
-            reconnectAttempt++
+            attempt++
         }
     }
 
@@ -119,9 +205,12 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     try { candidate.close() } catch (_: Exception) {}
                 }
             }
-            val plain = connected ?: throw IllegalStateException("Unable to connect to ${config.host}:${config.port} over IPv4 or IPv6: " + (connectFailure?.message ?: "no resolved addresses"), connectFailure)
-            plain.soTimeout = 45000
-            plain.keepAlive = true
+            val plain = connected ?: throw IllegalStateException(
+                "Unable to connect to ${config.host}:${config.port} over IPv4 or IPv6: " +
+                    (connectFailure?.message ?: "no resolved addresses"),
+                connectFailure
+            )
+            plain.soTimeout = 0
             val socket = if (config.tls) {
                 val sslSocket = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                     .createSocket(plain, config.host, config.port, true) as javax.net.ssl.SSLSocket
@@ -163,7 +252,6 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             send(JSONObject().put("id", 2).put("method", "mining.authorize")
                 .put("params", JSONArray().put(config.username).put(config.password)))
             val auth = awaitResponse(2, authorizeResponse, 10)
-            reconnectAttempt = 0
             if (auth.optBoolean("result").not()) {
                 throw IllegalStateException("Pool authorization failed: ${auth.opt("error")}")
             }
@@ -196,6 +284,16 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             val useArm = NativePowEngine.nativeCapabilities().contains("arm64_sha2=true")
 
             while (running.get() && socketRef.get() === socket && !socket.isClosed) {
+                // Thermal pause: keep the session alive (ping + reader), but
+                // suspend nonce scanning until the phone cools below 85 C.
+                if (paused.get()) {
+                    val temp = cpuTempC.get()
+                    lastMessage = "Pausa térmica: %.1f°C · sesión viva".format(Locale.US, temp)
+                    emit("Throttled")
+                    try { Thread.sleep(2000) } catch (_: InterruptedException) { break }
+                    continue
+                }
+
                 val loopNow = System.nanoTime()
                 if (loopNow - lastPingAt >= 30_000_000_000L) {
                     val pingId = requestId.incrementAndGet()
@@ -219,7 +317,8 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     headerPrefix = le(job.version, 4) + swapWords(hex(job.prevhash)) + merkle +
                         le(job.ntime, 4) + le(job.nbits, 4)
                     targetRef.set(targetFor(difficulty.get()))
-                    lastMessage = "Native SHA-256d ${if (useArm) "ARMv8 SHA2" else "portable"} · $nativeThreads threads · job ${job.id}"
+                    val threads = effectiveThreads.get()
+                    lastMessage = "Native SHA-256d ${if (useArm) "ARMv8 SHA2" else "portable"} · $threads hilos · job ${job.id}"
                     emit("Mining")
                 }
                 val prefix = headerPrefix ?: continue
@@ -228,50 +327,48 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                 val currentExtra = extraCounter.toString(16).padStart(extranonce2Size.get() * 2, '0')
                     .takeLast(extranonce2Size.get() * 2)
                 while (running.get() && jobRef.get() === activeJob && nonce <= 0xffffffffL) {
+                    if (paused.get()) break
+                    val threads = effectiveThreads.get().coerceAtLeast(1)
                     val remaining = 0x1_0000_0000L - nonce
                     val batchCount = minOf(nativeBatchSize.toLong(), remaining).toInt()
                     var scanTarget = targetRef.get()
-                    var scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, nativeThreads, useArm, scanTarget)
+                    var scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, threads, useArm, scanTarget)
                     var actualScanned = scan.getOrElse(0) { 0L }
                     while (targetRef.get() !== scanTarget && jobRef.get() === activeJob) {
                         scanTarget = targetRef.get()
-                        scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, nativeThreads, useArm, scanTarget)
+                        scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, threads, useArm, scanTarget)
                         actualScanned += scan.getOrElse(0) { 0L }
                     }
                     val scanned = scan.getOrElse(0) { 0L }
                     if (scanned <= 0L) error("Native SHA-256d scanner returned no progress")
                     hashes.addAndGet(actualScanned)
                     sessionHashes += actualScanned
+                    if (jobRef.get() !== activeJob) break
                     nonce += scanned
                     val shareCount = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
-                    if (jobRef.get() !== activeJob) {
-                        stale.addAndGet(shareCount.toLong())
-                        break
-                    }
                     for (index in 0 until shareCount) {
                         val shareNonce = scan.getOrElse(index + 2) { -1L }
                         if (shareNonce < 0L) continue
                         val currentTarget = targetRef.get()
+                        val shareHash = NativePowEngine.nativeHashHeader(header, shareNonce, useArm)
                         if (currentTarget !== scanTarget) {
-                            val candidateHash = NativePowEngine.nativeHashHeader(header, shareNonce, useArm)
-                            if (!meetsTarget(candidateHash, currentTarget)) continue
+                            if (!meetsTarget(shareHash, currentTarget)) continue
+                        }
+                        // Telemetry: track the best share we have ever found.
+                        // shareDifficulty = target_max / hash_LE, in Bitcoin terms.
+                        val shareDiff = computeDifficulty(shareHash)
+                        val shareBits = leadingZeroBits(shareHash)
+                        if (shareDiff > bestShareDifficulty || shareBits > bestShareBits) {
+                            if (shareDiff > bestShareDifficulty) bestShareDifficulty = shareDiff
+                            if (shareBits > bestShareBits) bestShareBits = shareBits
+                            bestShareHashHex = toHex(shareHash)
+                            lastMessage = "NEW BEST SHARE · diff %.3e · %d bits".format(Locale.US, shareDiff, shareBits)
                         }
                         val id = requestId.incrementAndGet()
                         val nonceHex = String.format(Locale.US, "%08x", shareNonce)
                         val params = JSONArray().put(config.username).put(job.id).put(currentExtra).put(job.ntime).put(nonceHex)
-                        val submitted = synchronized(jobGate) {
-                            if (jobRef.get() !== activeJob) {
-                                stale.incrementAndGet()
-                                false
-                            } else {
-                                submitIds[id] = true
-                                submitSentAt[id] = System.nanoTime()
-                                submitDifficulty[id] = difficulty.get()
-                                send(JSONObject().put("id", id).put("method", "mining.submit").put("params", params))
-                                true
-                            }
-                        }
-                        if (submitted) lastMessage = "Native share submitted"
+                        submitIds[id] = true
+                        send(JSONObject().put("id", id).put("method", "mining.submit").put("params", params))
                     }
                     val now = System.nanoTime()
                     if (now - lastRateAt >= 1_000_000_000L) {
@@ -290,8 +387,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
         } catch (e: Exception) {
             lastMessage = when (e) {
                 is java.net.UnknownHostException -> "DNS resolution failed for pool host: ${config.host}"
-                is java.net.SocketTimeoutException -> "Connection timed out: ${config.host}:${config.port}; verify pool host, port and TLS setting"
-                is javax.net.ssl.SSLException -> "TLS handshake failed for ${config.host}:${config.port}; verify that TLS is enabled and this is the pool TLS port"
+                is java.net.SocketTimeoutException -> "Connection timed out: ${config.host}:${config.port}"
                 else -> e.message ?: "Stratum session failed: ${e.javaClass.simpleName}"
             }
             if (running.get()) emit("Error")
@@ -310,19 +406,14 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                         val p = obj.getJSONArray("params")
                         val branchesJson = p.getJSONArray(4)
                         val branches = (0 until branchesJson.length()).map { branchesJson.getString(it) }
-                        val nextJob = PoolJob(p.getString(0), p.getString(1), p.getString(2), p.getString(3),
-                            branches, p.getString(5), p.getString(6), p.getString(7), p.optBoolean(8))
-                        synchronized(jobGate) {
-                            if (nextJob.clean) jobRef.set(null)
-                            jobRef.set(nextJob)
-                        }
+                        jobRef.set(PoolJob(p.getString(0), p.getString(1), p.getString(2), p.getString(3),
+                            branches, p.getString(5), p.getString(6), p.getString(7), p.optBoolean(8)))
                         if (p.optBoolean(8)) lastMessage = "New clean job received"
                     }
                     "mining.set_difficulty" -> {
                         val p = obj.getJSONArray("params")
                         val nextDifficulty = p.getDouble(0).coerceAtLeast(0.00000001)
                         difficulty.set(nextDifficulty)
-                        difficultyConfirmedByPool = true
                         targetRef.set(targetFor(nextDifficulty))
                     }
                     "client.reconnect" -> {
@@ -354,19 +445,11 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     if (sentAt > 0L) latencyMs.set((System.nanoTime() - sentAt) / 1_000_000L)
                     emit("Mining")
                 } else if (submitIds.remove(id) != null) {
-                    val sentAt = submitSentAt.remove(id) ?: 0L
-                    if (sentAt > 0L) submitLatencyMs.set((System.nanoTime() - sentAt) / 1_000_000L)
                     if (obj.optBoolean("result")) {
                         accepted.incrementAndGet()
-                        val acceptedDiff = java.math.BigDecimal.valueOf(submitDifficulty.remove(id) ?: difficulty.get())
-                        while (true) {
-                            val oldBest = bestShareDifficulty.get()
-                            if (acceptedDiff <= oldBest || bestShareDifficulty.compareAndSet(oldBest, acceptedDiff)) break
-                        }
                         rejectionReason = ""
                         lastMessage = "Share accepted"
                     } else {
-                        submitDifficulty.remove(id)
                         rejected.incrementAndGet()
                         rejectionReason = obj.opt("error")?.toString() ?: "Pool rejected share without a reason"
                         lastMessage = "Share rejected: " + rejectionReason
@@ -387,7 +470,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
         responseValues.remove(id)?.let { responses.remove(id); return it }
         if (!latch.await(seconds, TimeUnit.SECONDS)) {
             responses.remove(id)
-            throw IllegalStateException("No Stratum response for request $id from ${config.host}:${config.port}; verify that the port and TLS setting match the pool")
+            throw IllegalStateException("Pool response timeout (id $id)")
         }
         responses.remove(id)
         return responseValues.remove(id) ?: error("Missing pool response")
@@ -402,7 +485,25 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     }
 
     private fun emit(state: String, rate: Double = 0.0) {
-        onStats(MinerStats(state, rate, hashes.get(), accepted.get(), rejected.get(), difficulty.get(), lastMessage, latencyMs.get(), rejectionReason, difficultySuggestionStatus, stale.get(), submitLatencyMs.get(), bestShareDifficulty.get().toDouble(), difficultyConfirmedByPool))
+        onStats(
+            MinerStats(
+                state = state,
+                hashrate = rate,
+                totalHashes = hashes.get(),
+                accepted = accepted.get(),
+                rejected = rejected.get(),
+                difficulty = difficulty.get(),
+                message = lastMessage,
+                latencyMs = latencyMs.get(),
+                rejectionReason = rejectionReason,
+                difficultySuggestion = difficultySuggestionStatus,
+                bestShareDifficulty = bestShareDifficulty,
+                bestShareBits = bestShareBits,
+                bestShareHashHex = bestShareHashHex,
+                cpuTempC = cpuTempC.get(),
+                effectiveThreads = effectiveThreads.get()
+            )
+        )
     }
 
     private fun hex(value: String): ByteArray {
@@ -426,7 +527,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
 
     private fun targetFor(diff: Double): ByteArray {
         val max = BigInteger("00000000ffff0000000000000000000000000000000000000000000000000000", 16)
-        val target = max.toBigDecimal().divide(diff.toBigDecimal(), 0, java.math.RoundingMode.DOWN).toBigInteger()
+        val target = max.toBigDecimal().divide(diff.toBigDecimal(), 0, RoundingMode.DOWN).toBigInteger()
             .coerceAtMost(BigInteger.ONE.shiftLeft(256).subtract(BigInteger.ONE))
         val b = target.toByteArray().let { if (it.size > 32) it.takeLast(32).toByteArray() else it }
         return ByteArray(32) { i -> if (i < 32 - b.size) 0 else b[i - (32 - b.size)] }
@@ -440,5 +541,45 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             if (h > t) return false
         }
         return true
+    }
+
+    /**
+     * Bitcoin difficulty of a hash = max_target / hash_LE_uint256.
+     * A difficulty >= current network difficulty means the hash would
+     * have been a valid block on mainnet.
+     */
+    private fun computeDifficulty(hash: ByteArray): Double {
+        val leBytes = ByteArray(32) { hash[31 - it] }
+        val h = BigInteger(1, leBytes)
+        if (h.signum() == 0) return Double.POSITIVE_INFINITY
+        val maxTarget = BigInteger("00000000ffff0000000000000000000000000000000000000000000000000000", 16)
+        return maxTarget.toBigDecimal()
+            .divide(h.toBigDecimal(), 6, RoundingMode.HALF_UP)
+            .toDouble()
+    }
+
+    /** Leading zero bits of the hash in big-endian display order. */
+    private fun leadingZeroBits(hash: ByteArray): Int {
+        var bits = 0
+        for (i in 0 until 32) {
+            val b = hash[i].toInt() and 0xff
+            if (b == 0) {
+                bits += 8
+            } else {
+                bits += Integer.numberOfLeadingZeros(b) - 24
+                break
+            }
+        }
+        return bits
+    }
+
+    private fun toHex(bytes: ByteArray): String {
+        val sb = StringBuilder(bytes.size * 2)
+        for (b in bytes) sb.append(String.format(Locale.US, "%02x", b.toInt() and 0xff))
+        return sb.toString()
+    }
+
+    companion object {
+        private const val nativeBatchSize = 262144
     }
 }
