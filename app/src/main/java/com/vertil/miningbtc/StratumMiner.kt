@@ -665,6 +665,9 @@ class StratumMiner(
                 hashFeed = synchronized(feedLock) { liveFeed.toList() },
                 topHashes = synchronized(feedLock) { topFeed.toList() },
                 cpuSensorName = cpuSensorName.get(),
+                networkBitsHex = networkBitsHex,
+                networkDifficulty = networkDifficulty,
+                bitsMissing = (BitcoinTarget.leadingZeroBits(networkTargetRef.get()) - bestShareBits).coerceAtLeast(0),
                 cpuTempC = cpuTempC.get(),
                 effectiveThreads = effectiveThreads.get()
             )
