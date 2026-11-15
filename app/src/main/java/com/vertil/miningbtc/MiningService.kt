@@ -220,6 +220,60 @@ class MiningService : Service() {
         )
     }
 
+    fun exportStatsJson(): String {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        return org.json.JSONObject()
+            .put("version", 1)
+            .put("totalHashes", prefs.getLong("totalHashes", 0L))
+            .put("totalAccepted", prefs.getLong("totalAccepted", 0L))
+            .put("totalRejected", prefs.getLong("totalRejected", 0L))
+            .put("bestShareHashHex", prefs.getString("bestShareHashHex", "") ?: "")
+            .put("bestShareDifficulty", prefs.getString("bestShareDifficulty", "0.0") ?: "0.0")
+            .put("bestShareBits", prefs.getInt("bestShareBits", 0))
+            .put("bestShareTimestampMs", prefs.getLong("bestShareTimestampMs", 0L))
+            .put("bestShareNonce", prefs.getLong("bestShareNonce", -1L))
+            .toString(2)
+    }
+
+    fun importStatsJson(json: String) {
+        val obj = org.json.JSONObject(json)
+        require(obj.optInt("version", -1) == 1) { "Formato de estadísticas no compatible" }
+        val wasRunning = running
+        if (wasRunning) stopMining()
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        prefs.edit()
+            .putLong("totalHashes", obj.optLong("totalHashes", 0L).coerceAtLeast(0L))
+            .putLong("totalAccepted", obj.optLong("totalAccepted", 0L).coerceAtLeast(0L))
+            .putLong("totalRejected", obj.optLong("totalRejected", 0L).coerceAtLeast(0L))
+            .putString("bestShareHashHex", obj.optString("bestShareHashHex", ""))
+            .putString("bestShareDifficulty", obj.optString("bestShareDifficulty", "0.0"))
+            .putInt("bestShareBits", obj.optInt("bestShareBits", 0).coerceIn(0, 256))
+            .putLong("bestShareTimestampMs", obj.optLong("bestShareTimestampMs", 0L).coerceAtLeast(0L))
+            .putLong("bestShareNonce", obj.optLong("bestShareNonce", -1L))
+            .apply()
+        NativePowEngine.nativeResetBestHash()
+        lastPersistedBestHash = ""
+        lastStatsPersistMs = 0L
+        lastStats = onLoadStats(prefs)
+        lastStats?.let { value -> listeners.forEach { listener -> try { listener(value) } catch (_: Exception) {} } }
+        if (wasRunning) startMiningFromPrefs()
+    }
+
+    fun resetStatistics() {
+        val wasRunning = running
+        if (wasRunning) stopMining()
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .remove("totalHashes").remove("totalAccepted").remove("totalRejected")
+            .remove("bestShareHashHex").remove("bestShareDifficulty").remove("bestShareBits")
+            .remove("bestShareTimestampMs").remove("bestShareNonce").apply()
+        NativePowEngine.nativeResetBestHash()
+        lastPersistedBestHash = ""
+        lastStatsPersistMs = 0L
+        lastStats = MinerStats("Idle")
+        listeners.forEach { listener -> try { listener(lastStats!!) } catch (_: Exception) {} }
+        if (wasRunning) startMiningFromPrefs()
+    }
+
     fun simulateBlockAlert() {
         // A deliberately easy synthetic target exercises the same target predicate
         // used for real mining.notify nBits, without submitting a fake share to the pool.

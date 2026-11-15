@@ -80,6 +80,10 @@ Java_com_vertil_miningbtc_NativePowEngine_nativePollBestHash(JNIEnv* env,jclass)
  env->SetLongArrayRegion(out,0,9,values);
  return out;
 }
+extern "C" JNIEXPORT void JNICALL
+Java_com_vertil_miningbtc_NativePowEngine_nativeResetBestHash(JNIEnv*,jclass) {
+ reset_best_hash();
+}
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_com_vertil_miningbtc_NativePowEngine_nativeBenchmark(JNIEnv* env,jclass,jbyteArray input,jlong duration,jint requested,jboolean arm,jint affinityMode) {
  if(env->GetArrayLength(input)!=80 || duration<=0)return nullptr;

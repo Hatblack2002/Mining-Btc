@@ -124,6 +124,10 @@ BestHashSnapshot get_best_hash() {
  std::lock_guard<std::mutex> lock(bestHashMutex);
  return globalBestHash;
 }
+void reset_best_hash() {
+ std::lock_guard<std::mutex> lock(bestHashMutex);
+ globalBestHash=BestHashSnapshot{0,{},false};
+}
 bool digest_meets_target_early(const Digest& h,const Digest& t) {
  // Bitcoin interprets the raw SHA digest as a little-endian uint256.
  // Reject on the most-significant (last) 32-bit word before comparing the remainder.

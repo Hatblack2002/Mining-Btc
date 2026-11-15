@@ -71,6 +71,11 @@ int main() {
   std::cerr<<"FAIL process-wide best hash snapshot\\n";return 13;
  }
  std::cout<<"PASS process-wide best hash snapshot\\n";
+ reset_best_hash();
+ if(get_best_hash().has_best) {
+  std::cerr<<"FAIL process-wide best hash reset\\n";return 14;
+ }
+ std::cout<<"PASS process-wide best hash reset\\n";
  std::cout<<"PASS best hash matches portable SHA-256d reference for 513 known nonces\\n";
  std::cout<<"PASS worker-local hash feed sampling\\n";
  Digest zeroTarget{};

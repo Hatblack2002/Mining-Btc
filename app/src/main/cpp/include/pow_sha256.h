@@ -23,6 +23,7 @@ struct ScanResult { uint64_t hashes; std::vector<uint32_t> shares; std::vector<u
 struct BestHashSnapshot { uint32_t nonce; Digest digest; bool has_best; };
 void record_best_hash(const ScanResult& scan);
 BestHashSnapshot get_best_hash();
+void reset_best_hash();
 ScanResult scan_nonce_batch(const uint8_t header[80], uint32_t start, uint32_t count, unsigned threads, bool use_arm, const Digest& target, const Digest& block_target);
 std::string self_test_report();
 }

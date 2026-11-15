@@ -32,7 +32,10 @@ import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
     private val exportCsvRequestCode = 501
+    private val exportStatsRequestCode = 502
+    private val importStatsRequestCode = 503
     private var pendingExportText = ""
+    private var pendingStatsExportText = ""
     private val bg = Color.rgb(8, 14, 23)
     private val panel = Color.rgb(17, 27, 40)
     private val muted = Color.rgb(145, 163, 184)
@@ -227,6 +230,21 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 toast("No se pudo exportar CSV: ${e.message}")
             }
+        } else if (requestCode == exportStatsRequestCode && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            try {
+                contentResolver.openOutputStream(uri)?.use { it.write(pendingStatsExportText.toByteArray(Charsets.UTF_8)) }
+                toast("Estadísticas exportadas")
+            } catch (e: Exception) { toast("Error al exportar: ${e.message}") }
+        } else if (requestCode == importStatsRequestCode && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            try {
+                val json = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: error("No se pudo leer el archivo")
+                val targetService = service ?: error("Servicio no disponible")
+                targetService.importStatsJson(json)
+                toast("Estadísticas importadas")
+            } catch (e: Exception) { toast("Importación rechazada: ${e.message}") }
         }
     }
 
@@ -386,6 +404,20 @@ class MainActivity : Activity() {
         actions.addView(startButton, LinearLayout.LayoutParams(0, dp(48), 1f))
         actions.addView(stopButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
         p.addView(actions)
+        p.addView(action("EXPORTAR ESTADÍSTICAS (JSON)") { exportStatsJson() })
+        p.addView(action("IMPORTAR ESTADÍSTICAS (JSON)") { importStatsJson() })
+        p.addView(action("REINICIAR ESTADÍSTICAS") {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Reiniciar estadísticas")
+                .setMessage("Se borrarán el mejor hash, hashes acumulados y shares aceptados/rechazados. La configuración del pool y la wallet se conservarán.")
+                .setNegativeButton("Cancelar", null)
+                .setPositiveButton("Reiniciar") { _, _ ->
+                    try {
+                        (service ?: error("Servicio no disponible")).resetStatistics()
+                        toast("Estadísticas reiniciadas")
+                    } catch (e: Exception) { toast("No se pudo reiniciar: ${e.message}") }
+                }.show()
+        })
         p.addView(action("SIMULAR ALERTA DE BLOQUE (TARGET FALSO)") {
             service?.simulateBlockAlert() ?: toast("Servicio todavía no está enlazado")
         })
@@ -573,6 +605,26 @@ class MainActivity : Activity() {
                     .show()
             }
         }
+    }
+
+    private fun exportStatsJson() {
+        try {
+            pendingStatsExportText = (service ?: error("Servicio no disponible")).exportStatsJson()
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/json"
+                putExtra(Intent.EXTRA_TITLE, "mining-btc-statistics.json")
+            }
+            startActivityForResult(intent, exportStatsRequestCode)
+        } catch (e: Exception) { toast("No se pudo preparar la exportación: ${e.message}") }
+    }
+
+    private fun importStatsJson() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+        }
+        startActivityForResult(intent, importStatsRequestCode)
     }
 
     private fun setFeedRate(rate: Int) {
