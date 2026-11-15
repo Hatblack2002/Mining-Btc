@@ -30,16 +30,19 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeHashHeader(JNIEnv* env,jclass,jb
  jbyteArray out=env->NewByteArray(32);env->SetByteArrayRegion(out,0,32,reinterpret_cast<const jbyte*>(d.data()));return out;
 }
 extern "C" JNIEXPORT jlongArray JNICALL
-Java_com_vertil_miningbtc_NativePowEngine_nativeScanBatch(JNIEnv* env,jclass,jbyteArray input,jlong startNonce,jint nonceCount,jint requested,jboolean arm,jbyteArray targetInput) {
- if(env->GetArrayLength(input)!=80 || env->GetArrayLength(targetInput)!=32 || startNonce<0 || nonceCount<=0 || requested<=0 || uint64_t(startNonce)+uint64_t(nonceCount)>(1ULL<<32)) return nullptr;
+Java_com_vertil_miningbtc_NativePowEngine_nativeScanBatch(JNIEnv* env,jclass,jbyteArray input,jlong startNonce,jint nonceCount,jint requested,jboolean arm,jbyteArray targetInput,jbyteArray blockTargetInput) {
+ if(env->GetArrayLength(input)!=80 || env->GetArrayLength(targetInput)!=32 || env->GetArrayLength(blockTargetInput)!=32 || startNonce<0 || nonceCount<=0 || requested<=0 || uint64_t(startNonce)+uint64_t(nonceCount)>(1ULL<<32)) return nullptr;
  jbyte raw[80];env->GetByteArrayRegion(input,0,80,raw);
  jbyte targetRaw[32];env->GetByteArrayRegion(targetInput,0,32,targetRaw);
+ jbyte blockTargetRaw[32];env->GetByteArrayRegion(blockTargetInput,0,32,blockTargetRaw);
  uint8_t header[80];for(int i=0;i<80;i++)header[i]=uint8_t(raw[i]);
- Digest target;for(int i=0;i<32;i++)target[size_t(i)]=uint8_t(targetRaw[i]);
- ScanResult scan=scan_nonce_batch(header,uint32_t(startNonce),uint32_t(nonceCount),unsigned(requested),arm,target);
- std::vector<jlong> values;values.reserve(scan.shares.size()+11+scan.feed.size()*9);
+ Digest target,blockTarget;for(int i=0;i<32;i++){target[size_t(i)]=uint8_t(targetRaw[i]);blockTarget[size_t(i)]=uint8_t(blockTargetRaw[i]);}
+ ScanResult scan=scan_nonce_batch(header,uint32_t(startNonce),uint32_t(nonceCount),unsigned(requested),arm,target,blockTarget);
+ std::vector<jlong> values;values.reserve(scan.shares.size()+scan.blocks.size()+12+scan.feed.size()*9);
  values.push_back(jlong(scan.hashes));values.push_back(jlong(scan.shares.size()));
  for(uint32_t nonce:scan.shares) values.push_back(jlong(nonce));
+ values.push_back(jlong(scan.blocks.size()));
+ for(uint32_t nonce:scan.blocks) values.push_back(jlong(nonce));
  values.push_back(scan.has_best?jlong(scan.best_nonce):jlong(-1));
  auto appendDigest=[&values](const Digest& digest) {
   for(int word=0;word<8;word++) {
