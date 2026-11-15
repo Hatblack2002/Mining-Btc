@@ -64,17 +64,17 @@ static bool digest_numeric_less(const Digest& a,const Digest& b) {
  for(int i=27;i>=0;i--) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
  return false;
 }
-ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t count,unsigned threads,bool arm,const Digest& target) {
- if(count==0 || threads==0 || uint64_t(start)+uint64_t(count)>(1ULL<<32)) return {0,{},0,{},false,{}};
+ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t count,unsigned threads,bool arm,const Digest& target,const Digest& blockTarget) {
+ if(count==0 || threads==0 || uint64_t(start)+uint64_t(count)>(1ULL<<32)) return {0,{},{},0,{},false,{}};
  const Midstate mid=make_midstate(header,arm);
  std::atomic<uint32_t> next{0};
  std::atomic<uint64_t> scanned{0};
  std::mutex resultMutex;
- std::vector<uint32_t> found;
+ std::vector<uint32_t> found; std::vector<uint32_t> blocks;
  Digest bestDigest{}; uint32_t bestNonce=0; bool hasBest=false; std::vector<FeedSample> feed;
  std::vector<std::thread> workers;workers.reserve(threads);
  for(unsigned t=0;t<threads;t++) workers.emplace_back([&] {
-  std::vector<uint32_t> local;
+  std::vector<uint32_t> local; std::vector<uint32_t> localBlocks;
   Digest localBest{}; uint32_t localBestNonce=0; bool localHasBest=false; std::vector<FeedSample> localFeed;
   for(;;) {
    const uint32_t offset=next.fetch_add(256,std::memory_order_relaxed);
@@ -91,10 +91,12 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
     // the hot hash loop performs no locks and no JNI callbacks.
     if((i & 8191u)==0u) localFeed.push_back({nonce,digest});
     if(digest_meets_stratum_target(digest,target)) local.push_back(nonce);
+    if(digest_meets_stratum_target(digest,blockTarget)) localBlocks.push_back(nonce);
    }
   }
   std::lock_guard<std::mutex> lock(resultMutex);
   found.insert(found.end(),local.begin(),local.end());
+  blocks.insert(blocks.end(),localBlocks.begin(),localBlocks.end());
   feed.insert(feed.end(),localFeed.begin(),localFeed.end());
   if(localHasBest && (!hasBest || digest_numeric_less(localBest,bestDigest))) {
    bestDigest=localBest; bestNonce=localBestNonce; hasBest=true;
@@ -102,8 +104,9 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
  });
  for(auto& worker:workers) worker.join();
  std::sort(found.begin(),found.end());
+ std::sort(blocks.begin(),blocks.end());
  std::sort(feed.begin(),feed.end(),[](const FeedSample& a,const FeedSample& b){return a.nonce<b.nonce;});
- return {scanned.load(std::memory_order_relaxed),std::move(found),bestNonce,bestDigest,hasBest,std::move(feed)};
+ return {scanned.load(std::memory_order_relaxed),std::move(found),std::move(blocks),bestNonce,bestDigest,hasBest,std::move(feed)};
 }
 bool digest_meets_target_early(const Digest& h,const Digest& t) {
  // Bitcoin interprets the raw SHA digest as a little-endian uint256.
