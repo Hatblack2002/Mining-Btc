@@ -25,9 +25,9 @@ class BitcoinTargetTest {
     }
 
     @Test fun countsLeadingZeroBitsFromDisplayedHashNotInternalDigestOrder() {
-        val displayedHash = "0000000040" + "00".repeat(27)
+        val displayedHash = "0000000020" + "00".repeat(27)
         assertEquals(34, BitcoinTarget.leadingZeroBitsFromDisplayHash(displayedHash))
-        assertEquals(43, BitcoinTarget.leadingZeroBitsFromDisplayHash(
+        assertEquals(42, BitcoinTarget.leadingZeroBitsFromDisplayHash(
             "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
         ))
     }
