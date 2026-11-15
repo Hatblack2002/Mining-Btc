@@ -94,9 +94,10 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                 }
             }
 
+            val subscribeResponse = registerResponse(1)
             send(JSONObject().put("id", 1).put("method", "mining.subscribe")
                 .put("params", JSONArray().put("VertilMiningBTC/0.2")))
-            val sub = awaitResponse(1, 10)
+            val sub = awaitResponse(1, subscribeResponse, 10)
             if (sub.opt("error") != null && sub.opt("error") != JSONObject.NULL) {
                 throw IllegalStateException("Subscribe rejected: ${sub.opt("error")}")
             }
@@ -105,9 +106,10 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             extranonce1.set(result.getString(1))
             extranonce2Size.set(result.getInt(2).coerceIn(1, 16))
 
+            val authorizeResponse = registerResponse(2)
             send(JSONObject().put("id", 2).put("method", "mining.authorize")
                 .put("params", JSONArray().put(config.username).put(config.password)))
-            val auth = awaitResponse(2, 10)
+            val auth = awaitResponse(2, authorizeResponse, 10)
             if (auth.optBoolean("result").not()) {
                 throw IllegalStateException("Pool authorization failed: ${auth.opt("error")}")
             }
@@ -218,6 +220,8 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                 if (latch != null) {
                     responseValues[id] = obj
                     latch.countDown()
+                } else if (id == 1L || id == 2L) {
+                    responseValues[id] = obj
                 } else if (submitIds.remove(id) != null) {
                     if (obj.optBoolean("result")) accepted.incrementAndGet() else rejected.incrementAndGet()
                     lastMessage = if (obj.optBoolean("result")) "Share accepted" else "Share rejected: ${obj.opt("error")}"
@@ -227,11 +231,18 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
         } catch (_: Exception) {}
     }
 
-    private fun awaitResponse(id: Long, seconds: Long): JSONObject {
+    private fun registerResponse(id: Long): CountDownLatch {
         val latch = CountDownLatch(1)
         responses[id] = latch
-        // The response may arrive immediately; handleLine stores it only after registration in normal sequence.
-        if (!latch.await(seconds, TimeUnit.SECONDS)) throw IllegalStateException("Pool response timeout (id $id)")
+        return latch
+    }
+
+    private fun awaitResponse(id: Long, latch: CountDownLatch, seconds: Long): JSONObject {
+        responseValues.remove(id)?.let { responses.remove(id); return it }
+        if (!latch.await(seconds, TimeUnit.SECONDS)) {
+            responses.remove(id)
+            throw IllegalStateException("Pool response timeout (id $id)")
+        }
         responses.remove(id)
         return responseValues.remove(id) ?: error("Missing pool response")
     }
