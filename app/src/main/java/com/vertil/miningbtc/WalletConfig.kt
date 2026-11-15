@@ -2,6 +2,9 @@ package com.vertil.miningbtc
 
 /** Separates the payout address shown in the UI from the Stratum username. */
 object WalletConfig {
+    /** Returns true only when the payout address passes mainnet Bech32/Bech32m validation. */
+    fun isValidPayoutAddress(address: String): Boolean = Bech32.isValidMainnet(address)
+
     /**
      * New installs store the payout address separately. Older builds stored
      * wallet.worker in "user", so strip only the final worker suffix on migration.

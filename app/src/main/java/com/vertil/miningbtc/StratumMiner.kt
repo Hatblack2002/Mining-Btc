@@ -396,6 +396,7 @@ class StratumMiner(
                 }
 
                 val loopNow = System.nanoTime()
+                expirePendingSubmits(loopNow)
                 if (loopNow - lastPingAt >= 30_000_000_000L) {
                     val pingId = requestId.incrementAndGet()
                     pingSentAt[pingId] = loopNow
@@ -611,6 +612,19 @@ class StratumMiner(
                 }
             }
         } catch (_: Exception) {}
+    }
+
+    private fun expirePendingSubmits(nowNanos: Long) {
+        val timeoutNanos = 60_000_000_000L
+        submitIds.entries.toList().forEach { entry ->
+            if (nowNanos - entry.value.sentAtNanos >= timeoutNanos &&
+                submitIds.remove(entry.key, entry.value)) {
+                staleShares.incrementAndGet()
+                lastMessage = "Share submit timeout after 60 seconds · nonce %08x".format(Locale.US, entry.value.nonce)
+                updateFeedStatus(entry.value.nonce, "rejected")
+                emit("Mining", lastReportedRate)
+            }
+        }
     }
 
     private fun registerResponse(id: Long): CountDownLatch {

@@ -538,7 +538,7 @@ class MainActivity : Activity() {
         }
         // Bech32 / Bech32m validation: a malformed wallet means any block
         // reward would go to a stranger. Do not allow START on bad input.
-        if (!Bech32.isValidMainnet(wallet)) {
+        if (!WalletConfig.isValidPayoutAddress(wallet)) {
             toast("Wallet no es Bech32/Bech32m válida en mainnet (bc1…)")
             return
         }

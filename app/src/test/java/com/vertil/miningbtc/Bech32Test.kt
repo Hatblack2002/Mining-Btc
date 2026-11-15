@@ -43,4 +43,9 @@ class WalletConfigTest {
         assertEquals("$wallet.worker1", WalletConfig.stratumUsername(wallet, "worker1"))
         assertEquals(wallet, WalletConfig.stratumUsername(wallet, ""))
     }
+
+    @Test fun invalidWalletFailsTheSameGateUsedBeforeStartingMining() {
+        assertTrue(WalletConfig.isValidPayoutAddress(wallet))
+        assertFalse(WalletConfig.isValidPayoutAddress("bc1invalid"))
+    }
 }

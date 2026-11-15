@@ -370,11 +370,11 @@ class MiningService : Service() {
                     val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
                     val raw = battery?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
                     batteryTempC = if (raw >= 0) raw / 10.0 else 0.0
-                    lastStats?.let { old ->
-                        val updated = enrichStats(old)
-                        lastStats = updated
-                        listeners.forEach { listener -> try { listener(updated) } catch (_: Exception) {} }
-                    }
+                    val current = lastStats ?: MinerStats("Idle")
+                    val updated = enrichStats(current)
+                    lastStats = updated
+                    listeners.forEach { listener -> try { listener(updated) } catch (_: Exception) {} }
+                    appendTelemetryIfDue(updated)
                     Thread.sleep(2500)
                 } catch (_: InterruptedException) { break }
                 catch (_: Exception) { try { Thread.sleep(2500) } catch (_: InterruptedException) { break } }
