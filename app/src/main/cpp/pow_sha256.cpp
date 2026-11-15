@@ -82,15 +82,7 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
  const bool have_allowed = sched_getaffinity(0,sizeof(allowed),&allowed)==0;
  unsigned allowed_count=0;
  if(have_allowed) for(unsigned cpu=0;cpu<CPU_SETSIZE;cpu++) if(CPU_ISSET(cpu,&allowed)) allowed_count++;
- g_last_scan_workers.store(threads,std::memory_order_relaxed);
  g_last_scan_allowed_cpus.store(allowed_count,std::memory_order_relaxed);
- const int64_t now_ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
- int64_t expected_log=g_last_affinity_log_ms.load(std::memory_order_relaxed);
- if(now_ms-expected_log>=10000 && g_last_affinity_log_ms.compare_exchange_strong(expected_log,now_ms)) {
-#if defined(__ANDROID__)
-  __android_log_print(ANDROID_LOG_INFO,"MiningBTC-Native","scan workers=%u/%u allowed_cpus=%u affinity=all-allowed",threads,threads,allowed_count);
-#endif
- }
  std::atomic<uint32_t> next{0};
  std::atomic<uint64_t> scanned{0};
  std::mutex resultMutex;
@@ -128,6 +120,14 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
    bestDigest=localBest; bestNonce=localBestNonce; hasBest=true;
   }
  });
+ g_last_scan_workers.store(static_cast<unsigned>(workers.size()),std::memory_order_relaxed);
+ const int64_t now_ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+ int64_t expected_log=g_last_affinity_log_ms.load(std::memory_order_relaxed);
+ if(now_ms-expected_log>=10000 && g_last_affinity_log_ms.compare_exchange_strong(expected_log,now_ms)) {
+#if defined(__ANDROID__)
+  __android_log_print(ANDROID_LOG_INFO,"MiningBTC-Native","workers_created=%u/%u allowed_cpus=%u affinity=all-allowed",static_cast<unsigned>(workers.size()),threads,allowed_count);
+#endif
+ }
  for(auto& worker:workers) worker.join();
  std::sort(found.begin(),found.end());
  std::sort(blocks.begin(),blocks.end());
