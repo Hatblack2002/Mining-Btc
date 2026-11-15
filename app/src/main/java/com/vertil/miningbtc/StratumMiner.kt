@@ -50,6 +50,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     private val stale = AtomicLong(0)
     private val bestShareDifficulty = java.util.concurrent.atomic.AtomicReference(java.math.BigDecimal.ZERO)
     private val submitSentAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+    private val submitDifficulty = java.util.concurrent.ConcurrentHashMap<Long, Double>()
     private val submitLatencyMs = AtomicLong(-1)
     private val jobGate = Any()
     private val socketRef = AtomicReference<Socket?>(null)
@@ -61,6 +62,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     private val pingSentAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     private val latencyMs = AtomicLong(-1)
     private val suggestDifficultyRequestId = AtomicLong(-1)
+    @Volatile private var reconnectAttempt = 0
     private val nativeThreads = 8
     // Bounded batches limit how long a native scan can outlive a job or target update.
     private val nativeBatchSize = 8192
@@ -87,15 +89,14 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     }
 
     private fun runSession() {
-        var attempt = 0
         while (running.get()) {
             runSingleSession()
             if (!running.get()) break
-            val delaySeconds = (1L shl attempt.coerceAtMost(5)).coerceAtMost(30L)
+            val delaySeconds = (1L shl reconnectAttempt.coerceAtMost(5)).coerceAtMost(30L)
             lastMessage = "Reconnecting in " + delaySeconds + "s"
             emit("Reconnecting")
             try { Thread.sleep(delaySeconds * 1000L) } catch (_: InterruptedException) { break }
-            attempt++
+            reconnectAttempt++
         }
     }
 
@@ -160,6 +161,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             send(JSONObject().put("id", 2).put("method", "mining.authorize")
                 .put("params", JSONArray().put(config.username).put(config.password)))
             val auth = awaitResponse(2, authorizeResponse, 10)
+            reconnectAttempt = 0
             if (auth.optBoolean("result").not()) {
                 throw IllegalStateException("Pool authorization failed: ${auth.opt("error")}")
             }
@@ -262,6 +264,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                             } else {
                                 submitIds[id] = true
                                 submitSentAt[id] = System.nanoTime()
+                                submitDifficulty[id] = difficulty.get()
                                 send(JSONObject().put("id", id).put("method", "mining.submit").put("params", params))
                                 true
                             }
@@ -285,7 +288,8 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
         } catch (e: Exception) {
             lastMessage = when (e) {
                 is java.net.UnknownHostException -> "DNS resolution failed for pool host: ${config.host}"
-                is java.net.SocketTimeoutException -> "Connection timed out: ${config.host}:${config.port}"
+                is java.net.SocketTimeoutException -> "Connection timed out: ${config.host}:${config.port}; verify pool host, port and TLS setting"
+                is javax.net.ssl.SSLException -> "TLS handshake failed for ${config.host}:${config.port}; verify that TLS is enabled and this is the pool TLS port"
                 else -> e.message ?: "Stratum session failed: ${e.javaClass.simpleName}"
             }
             if (running.get()) emit("Error")
@@ -348,7 +352,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     if (sentAt > 0L) submitLatencyMs.set((System.nanoTime() - sentAt) / 1_000_000L)
                     if (obj.optBoolean("result")) {
                         accepted.incrementAndGet()
-                        val acceptedDiff = java.math.BigDecimal.valueOf(difficulty.get())
+                        val acceptedDiff = java.math.BigDecimal.valueOf(submitDifficulty.remove(id) ?: difficulty.get())
                         while (true) {
                             val oldBest = bestShareDifficulty.get()
                             if (acceptedDiff <= oldBest || bestShareDifficulty.compareAndSet(oldBest, acceptedDiff)) break
@@ -356,6 +360,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                         rejectionReason = ""
                         lastMessage = "Share accepted"
                     } else {
+                        submitDifficulty.remove(id)
                         rejected.incrementAndGet()
                         rejectionReason = obj.opt("error")?.toString() ?: "Pool rejected share without a reason"
                         lastMessage = "Share rejected: " + rejectionReason
@@ -376,7 +381,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
         responseValues.remove(id)?.let { responses.remove(id); return it }
         if (!latch.await(seconds, TimeUnit.SECONDS)) {
             responses.remove(id)
-            throw IllegalStateException("Pool response timeout (id $id)")
+            throw IllegalStateException("No Stratum response for request $id from ${config.host}:${config.port}; verify that the port and TLS setting match the pool")
         }
         responses.remove(id)
         return responseValues.remove(id) ?: error("Missing pool response")
