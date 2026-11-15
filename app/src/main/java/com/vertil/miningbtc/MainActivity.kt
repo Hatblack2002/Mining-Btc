@@ -70,6 +70,7 @@ class MainActivity : Activity() {
     private lateinit var bestShareTime: TextView
     private lateinit var topHashesLabel: TextView
     private lateinit var hashFeedView: TextView
+    private lateinit var feedScroll: ScrollView
     private lateinit var thermalDetail: TextView
     private lateinit var networkTargetLabel: TextView
     private lateinit var thermalBar: TextView
@@ -332,8 +333,18 @@ class MainActivity : Activity() {
         topHashesLabel = label("Esperando hashes…", 9f, muted, false).apply { typeface = Typeface.MONOSPACE }
         s.addView(topHashesLabel)
         s.addView(label("HASH FEED EN VIVO · MÁXIMO 200 FILAS", 10f, orange, true).padTop(14))
-        hashFeedView = label("Esperando hashes nativos…", 9f, muted, false).apply { typeface = Typeface.MONOSPACE; maxLines = 200 }
-        s.addView(hashFeedView)
+        hashFeedView = label("Esperando hashes nativos…", 9f, muted, false).apply {
+            typeface = Typeface.MONOSPACE
+            maxLines = 200
+            setHorizontallyScrolling(true)
+        }
+        feedScroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(-1, dp(240))
+            isFillViewport = false
+            addView(hashFeedView)
+            background = rounded(bg, 8)
+        }
+        s.addView(feedScroll)
         val feedControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         feedControls.addView(action("10/s") { setFeedRate(10) }, LinearLayout.LayoutParams(0, dp(40), 1f))
         feedControls.addView(action("30/s") { setFeedRate(30) }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(4) })
@@ -342,7 +353,11 @@ class MainActivity : Activity() {
         val feedActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         feedActions.addView(action("PAUSAR / REANUDAR") {
             feedPaused = !feedPaused
-            if (!feedPaused) latestStats?.let { renderHashFeed(it.hashFeed) }
+            if (!feedPaused) {
+                renderedFeedStatuses.clear()
+                hashFeedView.text = ""
+                latestStats?.let { renderHashFeed(it.hashFeed) }
+            }
         }, LinearLayout.LayoutParams(0, dp(42), 1f))
         feedActions.addView(action("EXPORTAR CSV") { exportMiningCsv() }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(6) })
         s.addView(feedActions)
@@ -577,6 +592,7 @@ class MainActivity : Activity() {
             renderedFeedStatuses.remove(firstKey)
         }
         hashFeedView.text = out
+        feedScroll.post { feedScroll.fullScroll(View.FOCUS_DOWN) }
     }
 
     private fun thermalStatusName(status: Int): String = when (status) {
