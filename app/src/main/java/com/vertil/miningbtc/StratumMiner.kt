@@ -423,16 +423,6 @@ class StratumMiner(
                         if (currentTarget !== scanTarget) {
                             if (!meetsTarget(shareHash, currentTarget)) continue
                         }
-                        // Telemetry: track the best share we have ever found.
-                        // shareDifficulty = target_max / hash_LE, in Bitcoin terms.
-                        val shareDiff = computeDifficulty(shareHash)
-                        val shareBits = leadingZeroBits(shareHash)
-                        if (shareDiff > bestShareDifficulty || shareBits > bestShareBits) {
-                            if (shareDiff > bestShareDifficulty) bestShareDifficulty = shareDiff
-                            if (shareBits > bestShareBits) bestShareBits = shareBits
-                            bestShareHashHex = toHex(shareHash)
-                            lastMessage = "NEW BEST SHARE · diff %.3e · %d bits".format(Locale.US, shareDiff, shareBits)
-                        }
                         val blockRecord = if (BitcoinTarget.meetsTarget(shareHash, networkTargetRef.get()) &&
                             reportedBlockNonces.add(shareNonce)) {
                             val blockHeader = header.copyOf()
