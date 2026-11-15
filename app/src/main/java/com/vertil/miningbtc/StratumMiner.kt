@@ -160,7 +160,6 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
             send(JSONObject().put("id", 2).put("method", "mining.authorize")
                 .put("params", JSONArray().put(config.username).put(config.password)))
             val auth = awaitResponse(2, authorizeResponse, 10)
-            attempt = 0
             if (auth.optBoolean("result").not()) {
                 throw IllegalStateException("Pool authorization failed: ${auth.opt("error")}")
             }
@@ -239,9 +238,12 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     if (scanned <= 0L) error("Native SHA-256d scanner returned no progress")
                     hashes.addAndGet(actualScanned)
                     sessionHashes += actualScanned
-                    if (jobRef.get() !== activeJob) break
                     nonce += scanned
                     val shareCount = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
+                    if (jobRef.get() !== activeJob) {
+                        stale.addAndGet(shareCount.toLong())
+                        break
+                    }
                     for (index in 0 until shareCount) {
                         val shareNonce = scan.getOrElse(index + 2) { -1L }
                         if (shareNonce < 0L) continue
