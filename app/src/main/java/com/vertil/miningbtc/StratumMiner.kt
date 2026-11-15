@@ -392,9 +392,32 @@ class StratumMiner(
                     if (jobRef.get() !== activeJob) break
                     nonce += scanned
                     val shareCount = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
+                    // Network-target hits are tracked independently of pool share difficulty.
+                    val blockCountIndex = shareCount + 2
+                    val blockCount = scan.getOrElse(blockCountIndex) { 0L }.toInt().coerceIn(0, 1024)
+                    for (blockIndex in 0 until blockCount) {
+                        val blockNonce = scan.getOrElse(blockCountIndex + 1 + blockIndex) { -1L }
+                        if (blockNonce < 0L || !reportedBlockNonces.add(blockNonce)) continue
+                        val blockHash = NativePowEngine.nativeHashHeader(header, blockNonce, useArm)
+                        val blockHeader = header.copyOf()
+                        blockHeader[76] = blockNonce.toByte()
+                        blockHeader[77] = (blockNonce ushr 8).toByte()
+                        blockHeader[78] = (blockNonce ushr 16).toByte()
+                        blockHeader[79] = (blockNonce ushr 24).toByte()
+                        val record = BlockFoundRecord(blockHeader, toHex(blockHash.reversedArray()),
+                            blockNonce, System.currentTimeMillis(), job.nbits, networkDifficulty)
+                        val blockId = requestId.incrementAndGet()
+                        val blockNonceHex = String.format(Locale.US, "%08x", blockNonce)
+                        val blockParams = JSONArray().put(config.username).put(job.id).put(currentExtra).put(job.ntime).put(blockNonceHex)
+                        submitIds[blockId] = blockNonce
+                        addFeedEntry(blockNonce, blockHash, "block")
+                        send(JSONObject().put("id", blockId).put("method", "mining.submit").put("params", blockParams))
+                        lastMessage = "BLOCK FOUND · network target met · nonce $blockNonceHex"
+                        onBlockFound(record)
+                    }
                     for (index in 0 until shareCount) {
                         val shareNonce = scan.getOrElse(index + 2) { -1L }
-                        if (shareNonce < 0L) continue
+                        if (shareNonce < 0L || reportedBlockNonces.contains(shareNonce)) continue
                         val currentTarget = targetRef.get()
                         val shareHash = NativePowEngine.nativeHashHeader(header, shareNonce, useArm)
                         if (currentTarget !== scanTarget) {
@@ -431,29 +454,6 @@ class StratumMiner(
                             lastMessage = "BLOCK FOUND · network target met · nonce $nonceHex"
                             onBlockFound(blockRecord)
                         }
-                    }
-                    // Network-target hits are tracked independently of pool share difficulty.
-                    val blockCountIndex = shareCount + 2
-                    val blockCount = scan.getOrElse(blockCountIndex) { 0L }.toInt().coerceIn(0, 1024)
-                    for (blockIndex in 0 until blockCount) {
-                        val blockNonce = scan.getOrElse(blockCountIndex + 1 + blockIndex) { -1L }
-                        if (blockNonce < 0L || !reportedBlockNonces.add(blockNonce)) continue
-                        val blockHash = NativePowEngine.nativeHashHeader(header, blockNonce, useArm)
-                        val blockHeader = header.copyOf()
-                        blockHeader[76] = blockNonce.toByte()
-                        blockHeader[77] = (blockNonce ushr 8).toByte()
-                        blockHeader[78] = (blockNonce ushr 16).toByte()
-                        blockHeader[79] = (blockNonce ushr 24).toByte()
-                        val record = BlockFoundRecord(blockHeader, toHex(blockHash.reversedArray()),
-                            blockNonce, System.currentTimeMillis(), job.nbits, networkDifficulty)
-                        val blockId = requestId.incrementAndGet()
-                        val blockNonceHex = String.format(Locale.US, "%08x", blockNonce)
-                        val blockParams = JSONArray().put(config.username).put(job.id).put(currentExtra).put(job.ntime).put(blockNonceHex)
-                        submitIds[blockId] = blockNonce
-                        addFeedEntry(blockNonce, blockHash, "block")
-                        send(JSONObject().put("id", blockId).put("method", "mining.submit").put("params", blockParams))
-                        lastMessage = "BLOCK FOUND · network target met · nonce $blockNonceHex"
-                        onBlockFound(record)
                     }
                     val now = System.nanoTime()
                     if (now - lastRateAt >= 1_000_000_000L) {
