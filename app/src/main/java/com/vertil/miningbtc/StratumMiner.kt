@@ -601,8 +601,7 @@ class StratumMiner(
         val shareCount = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
         val blockCountIndex = shareCount + 2
         val blockCount = scan.getOrElse(blockCountIndex) { 0L }.toInt().coerceIn(0, 1024)
-        val bestIndex = blockCountIndex + 1 + blockCount
-        val feedCountIndex = bestIndex + 9
+        val feedCountIndex = blockCountIndex + 1 + blockCount
         val feedCount = scan.getOrElse(feedCountIndex) { 0L }.toInt().coerceIn(0, 4096)
         var index = feedCountIndex + 1
         synchronized(feedLock) {
