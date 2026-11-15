@@ -92,7 +92,7 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
  Digest bestDigest{}; uint32_t bestNonce=0; bool hasBest=false; std::vector<FeedSample> feed;
  std::vector<std::thread> workers;workers.reserve(threads);
  std::atomic<unsigned> affinity_applied{0};
- for(unsigned t=0;t<threads;t++) workers.emplace_back([&,t] {
+ for(unsigned t=0;t<threads;t++) workers.emplace_back([&] {
   if(have_allowed && pthread_setaffinity_np(pthread_self(),sizeof(allowed),&allowed)==0) affinity_applied.fetch_add(1,std::memory_order_relaxed);
   std::vector<uint32_t> local; std::vector<uint32_t> localBlocks;
   Digest localBest{}; uint32_t localBestNonce=0; bool localHasBest=false; std::array<FeedSample,8> localFeed{}; uint32_t localFeedCount=0;
