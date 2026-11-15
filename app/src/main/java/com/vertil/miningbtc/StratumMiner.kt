@@ -32,6 +32,15 @@ data class PoolConfig(
     val suggestedDifficulty: Double = 1.0
 )
 
+data class HashFeedEntry(
+    val nonce: Long,
+    val hashHex: String,
+    val bits: Int,
+    val timestampMs: Long,
+    val difficulty: Double,
+    val status: String = "normal"
+)
+
 data class MinerStats(
     val state: String,
     val hashrate: Double = 0.0,
@@ -51,6 +60,9 @@ data class MinerStats(
     val bestShareBits: Int = 0,
     val bestShareHashHex: String = "",
     val bestShareTimestampMs: Long = 0L,
+    val bestShareNonce: Long = -1L,
+    val hashFeed: List<HashFeedEntry> = emptyList(),
+    val topHashes: List<HashFeedEntry> = emptyList(),
     val cpuTempC: Double = 0.0,
     val effectiveThreads: Int = 0
 )
@@ -86,17 +98,25 @@ class StratumMiner(
     private val requestId = AtomicLong(2)
     private val responses = java.util.concurrent.ConcurrentHashMap<Long, CountDownLatch>()
     private val responseValues = java.util.concurrent.ConcurrentHashMap<Long, JSONObject>()
-    private val submitIds = java.util.concurrent.ConcurrentHashMap<Long, Boolean>()
+    private val submitIds = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     private val pingSentAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     private val latencyMs = AtomicLong(-1)
     private val suggestDifficultyRequestId = AtomicLong(-1)
     private val maxThreads = 8
     private val effectiveThreads = AtomicInteger(maxThreads)
+    private val feedRateHz = AtomicInteger(30)
+    private val feedLock = Any()
+    private val pendingFeed = java.util.ArrayDeque<HashFeedEntry>()
+    private val liveFeed = java.util.ArrayDeque<HashFeedEntry>()
+    private val topFeed = ArrayList<HashFeedEntry>()
+    @Volatile private var lastFeedEmitNanos = 0L
+    @Volatile private var lastReportedRate = 0.0
     private val cpuTempC = AtomicReference(0.0)
     @Volatile private var bestShareDifficulty = initialStats.bestShareDifficulty
     @Volatile private var bestShareBits = initialStats.bestShareBits
     @Volatile private var bestShareHashHex = initialStats.bestShareHashHex
     @Volatile private var bestShareTimestampMs = initialStats.bestShareTimestampMs
+    @Volatile private var bestShareNonce = initialStats.bestShareNonce
     @Volatile private var rejectionReason = ""
     @Volatile private var lastMessage = "Connecting"
     @Volatile private var difficultySuggestionStatus = "Not sent"
@@ -112,6 +132,8 @@ class StratumMiner(
         thread(name = "thermal-monitor", isDaemon = true) { runThermalMonitor() }
         thread(name = "stratum-connection") { runSession() }
     }
+
+    fun setHashFeedRate(rate: Int) { feedRateHz.set(rate.coerceIn(10, 60)) }
 
     fun stop() {
         running.set(false)
@@ -371,7 +393,8 @@ class StratumMiner(
                         val id = requestId.incrementAndGet()
                         val nonceHex = String.format(Locale.US, "%08x", shareNonce)
                         val params = JSONArray().put(config.username).put(job.id).put(currentExtra).put(job.ntime).put(nonceHex)
-                        submitIds[id] = true
+                        submitIds[id] = shareNonce
+                        addFeedEntry(shareNonce, shareHash, "pending")
                         send(JSONObject().put("id", id).put("method", "mining.submit").put("params", params))
                     }
                     val now = System.nanoTime()
@@ -448,17 +471,20 @@ class StratumMiner(
                     val sentAt = pingSentAt.remove(id) ?: 0L
                     if (sentAt > 0L) latencyMs.set((System.nanoTime() - sentAt) / 1_000_000L)
                     emit("Mining")
-                } else if (submitIds.remove(id) != null) {
+                } else if (submitIds.containsKey(id)) {
+                    val submittedNonce = submitIds.remove(id) ?: -1L
                     if (obj.optBoolean("result")) {
                         accepted.incrementAndGet()
                         rejectionReason = ""
                         lastMessage = "Share accepted"
+                        updateFeedStatus(submittedNonce, "accepted")
                     } else {
                         rejected.incrementAndGet()
                         rejectionReason = obj.opt("error")?.toString() ?: "Pool rejected share without a reason"
                         lastMessage = "Share rejected: " + rejectionReason
+                        updateFeedStatus(submittedNonce, "rejected")
                     }
-                    emit("Mining")
+                    emit("Mining", lastReportedRate)
                 }
             }
         } catch (_: Exception) {}
@@ -488,29 +514,92 @@ class StratumMiner(
         }
     }
 
-    /** Consume the per-batch best hash returned by native workers; no per-hash JNI callbacks. */
+    /** Consume best-hash and sampled feed data returned once per native batch. */
     private fun updateBestFromNativeBatch(scan: LongArray) {
-        val count = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
-        val base = count + 2
+        val shareCount = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
+        val base = shareCount + 2
         val nonce = scan.getOrElse(base) { -1L }
-        if (nonce < 0L) return
+        if (nonce >= 0L) {
+            val digest = digestFromWords(scan, base + 1)
+            val candidateDifficulty = computeDifficulty(digest)
+            if (candidateDifficulty > bestShareDifficulty) {
+                bestShareDifficulty = candidateDifficulty
+                bestShareBits = leadingZeroBits(digest)
+                bestShareHashHex = toHex(digest.reversedArray())
+                bestShareTimestampMs = System.currentTimeMillis()
+                bestShareNonce = nonce
+                lastMessage = "NEW BEST HASH · %.3e diff · %d leading bits · nonce %08x"
+                    .format(Locale.US, candidateDifficulty, bestShareBits, nonce)
+            }
+        }
+        val feedCountIndex = base + 9
+        val feedCount = scan.getOrElse(feedCountIndex) { 0L }.toInt().coerceIn(0, 4096)
+        var index = feedCountIndex + 1
+        synchronized(feedLock) {
+            repeat(feedCount) {
+                val sampleNonce = scan.getOrElse(index++) { -1L }
+                val digest = digestFromWords(scan, index)
+                index += 8
+                if (sampleNonce >= 0L) {
+                    val bits = leadingZeroBits(digest)
+                    val diff = computeDifficulty(digest)
+                    val entry = HashFeedEntry(sampleNonce, toHex(digest.reversedArray()), bits,
+                        System.currentTimeMillis(), diff, if (bits >= 32) "threshold" else "normal")
+                    pendingFeed.addLast(entry)
+                    while (pendingFeed.size > 512) pendingFeed.removeFirst()
+                    if (topFeed.none { it.nonce == entry.nonce }) {
+                        topFeed.add(entry)
+                        topFeed.sortByDescending { it.difficulty }
+                        while (topFeed.size > 10) topFeed.removeAt(topFeed.lastIndex)
+                    }
+                }
+            }
+        }
+        val now = System.nanoTime()
+        val interval = 1_000_000_000L / feedRateHz.get().coerceAtLeast(10)
+        if (now - lastFeedEmitNanos >= interval) {
+            synchronized(feedLock) {
+                if (pendingFeed.isNotEmpty()) {
+                    liveFeed.addLast(pendingFeed.removeFirst())
+                    while (liveFeed.size > 200) liveFeed.removeFirst()
+                }
+            }
+            lastFeedEmitNanos = now
+            emit("Mining", lastReportedRate)
+        }
+    }
+
+    private fun digestFromWords(values: LongArray, offset: Int): ByteArray {
         val digest = ByteArray(32)
         for (word in 0 until 8) {
-            val value = scan.getOrElse(base + 1 + word) { 0L }.toInt()
-            val offset = word * 4
-            digest[offset] = (value ushr 24).toByte()
-            digest[offset + 1] = (value ushr 16).toByte()
-            digest[offset + 2] = (value ushr 8).toByte()
-            digest[offset + 3] = value.toByte()
+            val value = values.getOrElse(offset + word) { 0L }.toInt()
+            val at = word * 4
+            digest[at] = (value ushr 24).toByte()
+            digest[at + 1] = (value ushr 16).toByte()
+            digest[at + 2] = (value ushr 8).toByte()
+            digest[at + 3] = value.toByte()
         }
-        val candidateDifficulty = computeDifficulty(digest)
-        if (candidateDifficulty > bestShareDifficulty) {
-            bestShareDifficulty = candidateDifficulty
-            bestShareBits = leadingZeroBits(digest)
-            bestShareHashHex = toHex(digest.reversedArray())
-            bestShareTimestampMs = System.currentTimeMillis()
-            lastMessage = "NEW BEST HASH · %.3e diff · %d leading bits · nonce %08x"
-                .format(Locale.US, candidateDifficulty, bestShareBits, nonce)
+        return digest
+    }
+
+    private fun addFeedEntry(nonce: Long, digest: ByteArray, status: String) {
+        val bits = leadingZeroBits(digest)
+        val entry = HashFeedEntry(nonce, toHex(digest.reversedArray()), bits,
+            System.currentTimeMillis(), computeDifficulty(digest), status)
+        synchronized(feedLock) {
+            liveFeed.addLast(entry)
+            while (liveFeed.size > 200) liveFeed.removeFirst()
+            topFeed.add(entry)
+            topFeed.sortByDescending { it.difficulty }
+            while (topFeed.size > 10) topFeed.removeAt(topFeed.lastIndex)
+        }
+    }
+
+    private fun updateFeedStatus(nonce: Long, status: String) {
+        synchronized(feedLock) {
+            val rows = liveFeed.map { if (it.nonce == nonce) it.copy(status = status) else it }
+            liveFeed.clear()
+            rows.forEach { liveFeed.addLast(it) }
         }
     }
 
@@ -531,6 +620,9 @@ class StratumMiner(
                 bestShareBits = bestShareBits,
                 bestShareHashHex = bestShareHashHex,
                 bestShareTimestampMs = bestShareTimestampMs,
+                bestShareNonce = bestShareNonce,
+                hashFeed = synchronized(feedLock) { liveFeed.toList() },
+                topHashes = synchronized(feedLock) { topFeed.toList() },
                 cpuTempC = cpuTempC.get(),
                 effectiveThreads = effectiveThreads.get()
             )
