@@ -4,6 +4,11 @@
 #include <thread>
 #include <vector>
 #include <algorithm>
+#include <pthread.h>
+#include <sched.h>
+#include <fstream>
+#include <string>
+#include "nonce_scheduler.h"
 #include "pow_sha256.h"
 #include "nonce_scheduler.h"
 using namespace powlab;
@@ -33,22 +38,38 @@ Java_com_vertil_miningbtc_NativePowEngine_nativeBenchmark(JNIEnv* env,jclass,jby
  const Midstate mid=make_midstate(header,arm);
  const unsigned hc=std::max(1u,std::thread::hardware_concurrency());
  const unsigned count=std::max(1,std::min<int>(requested>0?requested:int(hc),int(hc)));
- std::atomic<uint64_t> hashes{0};std::atomic<uint64_t> next{0};
+ std::atomic<uint64_t> hashes{0};
+ NonceScheduler scheduler(2048);
+ std::vector<std::atomic<uint64_t>> counters(count);
+ for(auto& c:counters)c.store(0,std::memory_order_relaxed);
+ std::vector<int> capacities;
+ for(unsigned cpu=0;cpu<hc;cpu++) {
+  std::ifstream f("/sys/devices/system/cpu/cpu"+std::to_string(cpu)+"/cpu_capacity");
+  int cap=0;if(f>>cap)capacities.push_back(cap);else capacities.push_back(0);
+ }
+ std::vector<unsigned> order(hc);for(unsigned i=0;i<hc;i++)order[i]=i;
+ if(affinityMode==1)std::stable_sort(order.begin(),order.end(),[&](unsigned a,unsigned b){return capacities[a]>capacities[b];});
+ if(affinityMode==2)std::stable_sort(order.begin(),order.end(),[&](unsigned a,unsigned b){return capacities[a]<capacities[b];});
  const auto until=std::chrono::steady_clock::now()+std::chrono::milliseconds(duration);
  std::vector<std::thread> workers;workers.reserve(count);
  for(unsigned t=0;t<count;t++)workers.emplace_back([&,t]{
+  if(affinityMode!=0 && !order.empty()) {
+   cpu_set_t set;CPU_ZERO(&set);CPU_SET(order[t%order.size()],&set);
+   (void)pthread_setaffinity_np(pthread_self(),sizeof(set),&set);
+  }
   uint64_t local=0;
   while(std::chrono::steady_clock::now()<until) {
-   uint64_t start=next.fetch_add(1024,std::memory_order_relaxed);
-   if(start>0xffffffffULL)break;
-   uint64_t end=std::min<uint64_t>(start+1024,1ULL<<32);
-   for(uint64_t n=start;n<end && std::chrono::steady_clock::now()<until;n++) {
+   const NonceRange range=scheduler.acquire();
+   // A range is exclusively owned by this worker; its epoch identifies extranonce2 rollover.
+   for(uint64_t n=range.start;n<uint64_t(range.start)+range.count && std::chrono::steady_clock::now()<until;n++) {
     (void)hash_header_nonce(header,uint32_t(n),mid,arm);local++;
    }
+   counters[t].store(local,std::memory_order_relaxed);
   }
-  hashes.fetch_add(local,std::memory_order_relaxed);
+  counters[t].store(local,std::memory_order_relaxed);
  });
  for(auto& w:workers)w.join();
+ for(const auto& c:counters)hashes.fetch_add(c.load(std::memory_order_relaxed),std::memory_order_relaxed);
  jlong values[3]={jlong(hashes.load()),jlong(count),jlong(hc)};
  jlongArray out=env->NewLongArray(3);env->SetLongArrayRegion(out,0,3,values);return out;
 }
