@@ -11,6 +11,7 @@ object NativePowEngine {
     external fun nativeSelfTest(): String
     /** Returns [bestNonce, digestWord0..7]; polled twice per second, never per hash. */
     external fun nativePollBestHash(): LongArray
+    external fun nativeGetLastScanWorkerCount(): LongArray
     external fun nativeResetBestHash()
     external fun nativeHashHeader(header80: ByteArray, nonce: Long, useArmSha2: Boolean): ByteArray
     /** Returns scan counts, pool-share nonces, network-target nonces, then sampled (nonce,digest) entries. */
