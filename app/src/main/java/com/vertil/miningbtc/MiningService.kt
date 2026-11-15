@@ -208,9 +208,13 @@ class MiningService : Service() {
     }
 
     fun simulateBlockAlert() {
-        val fakeHeader = ByteArray(80)
+        // A deliberately easy synthetic target exercises the same target predicate
+        // used for real mining.notify nBits, without submitting a fake share to the pool.
+        val fakeDigest = ByteArray(32)
+        val fakeTarget = ByteArray(32) { 0xff.toByte() }
+        if (!BitcoinTarget.meetsTarget(fakeDigest, fakeTarget)) return
         handleBlockFound(BlockFoundRecord(
-            header80 = fakeHeader,
+            header80 = ByteArray(80),
             hashHex = "0000000000000000000000000000000000000000000000000000000000000000",
             nonce = 0L,
             timestampMs = System.currentTimeMillis(),
