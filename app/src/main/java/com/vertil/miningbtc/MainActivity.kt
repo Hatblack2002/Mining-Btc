@@ -241,7 +241,11 @@ class MainActivity : Activity() {
         val c = card()
         hostInput = field("Pool hostname", prefs.getString("host", "solo.ckpool.org") ?: "solo.ckpool.org")
         portInput = field("Port", prefs.getString("port", "3333") ?: "3333", true)
-        userInput = field("Wallet (Bech32 mainnet)", prefs.getString("user", "") ?: "")
+        // Keep the payout address separate from the Stratum username (wallet.worker).
+        // Migrate older installs whose only saved value was the composed username.
+        val savedWallet = prefs.getString("wallet", null)
+            ?: (prefs.getString("user", "") ?: "").substringBeforeLast(".", prefs.getString("user", "") ?: "")
+        userInput = field("Wallet (Bech32 mainnet)", savedWallet)
         workerNameInput = field("Worker name", prefs.getString("worker_name", "worker1") ?: "worker1")
         passInput = field("Worker password", prefs.getString("pass", "x") ?: "x")
         tlsInput = CheckBox(this).apply {
@@ -426,6 +430,7 @@ class MainActivity : Activity() {
         getSharedPreferences("pool_config", MODE_PRIVATE).edit()
             .putString("host", host)
             .putString("port", port.toString())
+            .putString("wallet", wallet)
             .putString("user", user)
             .putString("worker_name", worker)
             .putString("pass", pass)
