@@ -124,6 +124,9 @@ class StratumMiner(
     @Volatile private var lastReportedRate = 0.0
     private val cpuTempC = AtomicReference(0.0)
     private val cpuSensorName = AtomicReference("unavailable")
+    @Volatile private var officialThermalStatus = -1
+    private val severeThermalLatched = AtomicBoolean(false)
+    @Volatile private var thermalCoolSinceMs = 0L
     @Volatile private var bestShareDifficulty = initialStats.bestShareDifficulty
     @Volatile private var bestShareBits = initialStats.bestShareBits
     @Volatile private var bestShareHashHex = initialStats.bestShareHashHex
@@ -157,6 +160,16 @@ class StratumMiner(
 
     fun setHashFeedRate(rate: Int) { feedRateHz.set(rate.coerceIn(10, 60)) }
 
+    fun setSystemThermalStatus(status: Int) {
+        officialThermalStatus = status
+        if (status >= PowerThermalStatus.SEVERE) {
+            severeThermalLatched.set(true)
+            thermalCoolSinceMs = 0L
+        } else if (status > PowerThermalStatus.LIGHT) {
+            thermalCoolSinceMs = 0L
+        }
+    }
+
     fun stop() {
         running.set(false)
         try { socketRef.getAndSet(null)?.close() } catch (_: Exception) {}
@@ -184,12 +197,21 @@ class StratumMiner(
             val temp = reading.first
             cpuTempC.set(temp)
             cpuSensorName.set(reading.second)
+            val nowMs = System.currentTimeMillis()
+            if (severeThermalLatched.get()) {
+                if (officialThermalStatus in PowerThermalStatus.NONE..PowerThermalStatus.LIGHT) {
+                    if (thermalCoolSinceMs == 0L) thermalCoolSinceMs = nowMs
+                    if (nowMs - thermalCoolSinceMs >= 30_000L) severeThermalLatched.set(false)
+                } else {
+                    thermalCoolSinceMs = 0L
+                }
+            }
             when {
-                temp >= 85.0 -> {
+                severeThermalLatched.get() || temp >= 85.0 -> {
                     effectiveThreads.set(0)
                     paused.set(true)
                 }
-                temp >= 75.0 -> {
+                officialThermalStatus == PowerThermalStatus.MODERATE || temp >= 75.0 -> {
                     effectiveThreads.set(4)
                     paused.set(false)
                 }
@@ -756,17 +778,8 @@ class StratumMiner(
 
     /** Leading zero bits of the hash in big-endian display order. */
     /** Leading zero bits of the displayed Bitcoin hash (reverse of raw SHA digest). */
-    private fun leadingZeroBits(hash: ByteArray): Int {
-        var bits = 0
-        for (i in 31 downTo 0) {
-            val b = hash[i].toInt() and 0xff
-            if (b == 0) bits += 8 else {
-                bits += Integer.numberOfLeadingZeros(b) - 24
-                break
-            }
-        }
-        return bits
-    }
+    private fun leadingZeroBits(hash: ByteArray): Int =
+        BitcoinTarget.leadingZeroBitsFromDisplayHash(toHex(hash.reversedArray()))
 
     private fun toHex(bytes: ByteArray): String {
         val alphabet = "0123456789abcdef"
@@ -777,6 +790,13 @@ class StratumMiner(
             chars[i * 2 + 1] = alphabet[value and 15]
         }
         return String(chars)
+    }
+
+    private object PowerThermalStatus {
+        const val NONE = 0
+        const val LIGHT = 1
+        const val MODERATE = 2
+        const val SEVERE = 3
     }
 
     companion object {

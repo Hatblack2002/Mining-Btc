@@ -37,16 +37,23 @@ object BitcoinTarget {
         return maxDifficultyOne.toBigDecimal().divide(target.toBigDecimal(), 8, RoundingMode.HALF_UP).toDouble()
     }
 
-    fun leadingZeroBits(bigEndian: ByteArray): Int {
+    /** Counts leading zero bits in the conventional displayed Bitcoin hash (most-significant byte first). */
+    fun leadingZeroBitsFromDisplayHash(displayHashHex: String): Int {
+        require(displayHashHex.length == 64 && displayHashHex.all { it in "0123456789abcdefABCDEF" })
         var bits = 0
-        for (byte in bigEndian) {
-            val value = byte.toInt() and 0xff
+        for (i in 0 until 32) {
+            val value = displayHashHex.substring(i * 2, i * 2 + 2).toInt(16)
             if (value == 0) bits += 8 else {
                 bits += Integer.numberOfLeadingZeros(value) - 24
                 break
             }
         }
         return bits
+    }
+
+    fun leadingZeroBits(bigEndian: ByteArray): Int {
+        require(bigEndian.size == 32)
+        return leadingZeroBitsFromDisplayHash(bigEndian.joinToString("") { "%02x".format(it.toInt() and 0xff) })
     }
 
     private fun toFixed32(value: BigInteger): ByteArray {

@@ -553,17 +553,24 @@ class MainActivity : Activity() {
                 requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
             }
         }
-        // On Android 14+ a non-Play-Store app also needs the user to disable
-        // battery optimizations for the foreground service to truly survive
-        // Doze. Open the system settings page so the user can whitelist us.
+        // Explain the battery-optimization exemption before opening Android settings.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                try {
-                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                        .setData(Uri.parse("package:$packageName"))
-                    startActivity(intent)
-                } catch (_: Exception) {}
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("Permitir minería en segundo plano")
+                    .setMessage("Para mantener el hashrate con la pantalla apagada, excluye Mining BTC de la optimización de batería. Android puede limitar el CPU durante Doze.")
+                    .setNegativeButton("Ahora no", null)
+                    .setPositiveButton("Abrir ajustes") { _, _ ->
+                        try {
+                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                .setData(Uri.parse("package:$packageName"))
+                            startActivity(intent)
+                        } catch (_: Exception) {
+                            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        }
+                    }
+                    .show()
             }
         }
     }

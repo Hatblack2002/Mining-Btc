@@ -1,5 +1,6 @@
 package com.vertil.miningbtc
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -54,7 +55,10 @@ class MiningService : Service() {
     @Volatile private var lastNotificationMs = 0L
     @Volatile private var lastPersistedBestHash = ""
     private val telemetryFile by lazy { File(filesDir, "mining-telemetry.csv") }
-    private val thermalListener = PowerManager.OnThermalStatusChangedListener { status -> officialThermalStatus = status }
+    private val thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
+        officialThermalStatus = status
+        miner?.setSystemThermalStatus(status)
+    }
     private var miner: StratumMiner? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val listeners = CopyOnWriteArrayList<(MinerStats) -> Unit>()
@@ -86,7 +90,6 @@ class MiningService : Service() {
         }
         // ACTION_START or null (system restarted us) -> ensure foreground + mining
         startForeground(NOTIFICATION_ID, buildNotification("Iniciando minería…", 0.0, 0.0, 0))
-        acquireWakeLock()
         if (!running) startMiningFromPrefs()
         return START_STICKY
     }
@@ -105,6 +108,7 @@ class MiningService : Service() {
             return
         }
 
+        acquireWakeLock()
         running = true
         miner = StratumMiner(
             PoolConfig(host, port, user, pass, tls),
@@ -113,6 +117,7 @@ class MiningService : Service() {
         ) { stats ->
             onStats(stats, prefs)
         }
+        miner?.setSystemThermalStatus(officialThermalStatus)
         miner?.start()
     }
 
@@ -120,6 +125,14 @@ class MiningService : Service() {
         running = false
         miner?.stop()
         miner = null
+        releaseWakeLock()
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { wl ->
+            try { if (wl.isHeld) wl.release() } catch (_: Exception) {}
+        }
+        wakeLock = null
     }
 
     private fun acquireWakeLock() {
@@ -285,6 +298,7 @@ class MiningService : Service() {
                 val pm = getSystemService(POWER_SERVICE) as PowerManager
                 pm.addThermalStatusListener(thermalExecutor, thermalListener)
                 officialThermalStatus = pm.currentThermalStatus
+                miner?.setSystemThermalStatus(officialThermalStatus)
             } catch (_: Exception) { officialThermalStatus = -1 }
         }
     }
@@ -316,9 +330,12 @@ class MiningService : Service() {
         val now = System.currentTimeMillis()
         if (now - lastTelemetryLogMs < 10_000L) return
         synchronized(telemetryFile) {
-            if (!telemetryFile.exists()) telemetryFile.writeText("timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs\\n")
-            val sensor = stats.cpuSensorName.replace(",", "_").replace("\\n", " ")
-            telemetryFile.appendText("$now,${stats.cpuTempC},$sensor,${stats.batteryTempC},${stats.thermalStatus},${stats.hashrate}\\n")
+            if (!telemetryFile.exists()) telemetryFile.writeText("timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs,app_state\n")
+            val sensor = stats.cpuSensorName.replace(",", "_").replace("\n", " ")
+            val processState = ActivityManager.RunningAppProcessInfo()
+            ActivityManager.getMyMemoryState(processState)
+            val appState = if (processState.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) "foreground" else "background"
+            telemetryFile.appendText("$now,${stats.cpuTempC},$sensor,${stats.batteryTempC},${stats.thermalStatus},${stats.hashrate},$appState\n")
             lastTelemetryLogMs = now
         }
     }
@@ -326,7 +343,7 @@ class MiningService : Service() {
     fun setHashFeedRate(rate: Int) { miner?.setHashFeedRate(rate) }
 
     fun telemetryCsvText(): String = synchronized(telemetryFile) {
-        if (telemetryFile.exists()) telemetryFile.readText() else "timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs\\n"
+        if (telemetryFile.exists()) telemetryFile.readText() else "timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs,app_state\n"
     }
 
     private fun createNotificationChannel() {
@@ -357,6 +374,11 @@ class MiningService : Service() {
             this, 0, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+        val stopIntent = Intent(this, MiningService::class.java).setAction(ACTION_STOP)
+        val stopPi = PendingIntent.getService(
+            this, 10, stopIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
         val rateStr = if (hashrate > 0) " · " + formatRate(hashrate) else ""
         val bestStr = if (bestBits > 0) " · best ${bestBits}b" else ""
         return Notification.Builder(this, CHANNEL_ID)
@@ -365,6 +387,7 @@ class MiningService : Service() {
             .setSmallIcon(R.drawable.ic_mining_btc)
             .setOngoing(true)
             .setContentIntent(pi)
+            .addAction(android.R.drawable.ic_media_pause, "Detener", stopPi)
             .build()
     }
 
