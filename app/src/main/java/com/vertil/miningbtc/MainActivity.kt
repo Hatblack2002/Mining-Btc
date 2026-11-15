@@ -1,9 +1,15 @@
 package com.vertil.miningbtc
 
 import android.app.Activity
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.Gravity
+import android.view.View
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -16,70 +22,188 @@ class MainActivity : Activity() {
     private val running = AtomicBoolean(false)
     private lateinit var status: TextView
     private lateinit var rate: TextView
+    private lateinit var hashesView: TextView
     private lateinit var best: TextView
-    private lateinit var addressStatus: TextView
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
     private val receivingAddress = "bc1qatjctrapmz985s23yf8jh8rafvwtk46cpg3cyj"
 
+    private val bg = Color.rgb(8, 14, 23)
+    private val panel = Color.rgb(17, 27, 40)
+    private val muted = Color.rgb(145, 163, 184)
+    private val white = Color.rgb(239, 245, 251)
+    private val orange = Color.rgb(247, 147, 26)
+    private val green = Color.rgb(57, 201, 145)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(28, 32, 28, 28)
-            setBackgroundColor(0xFF101820.toInt())
-        }
-        fun text(value: String, size: Float, color: Int = 0xFFEAF0F6.toInt()) =
-            TextView(this).apply {
-                this.text = value
-                textSize = size
-                setTextColor(color)
-                setPadding(0, 10, 0, 10)
-            }
+        window.statusBarColor = bg
+        window.navigationBarColor = bg
+        window.decorView.systemUiVisibility = 0
 
-        root.addView(text("MINING BTC LAB", 25f))
-        root.addView(text("SHA-256d · Android benchmark · v0.1.0", 13f, 0xFF91A4B7.toInt()))
-        root.addView(text("Receiving address", 14f, 0xFF91A4B7.toInt()))
-        root.addView(text(receivingAddress, 12f))
-        addressStatus = text("Checking Bech32 address…", 13f, 0xFF80CBC4.toInt())
-        root.addView(addressStatus)
-        root.addView(text("Measured hashrate", 14f, 0xFF91A4B7.toInt()))
-        rate = text("0 H/s", 30f)
-        root.addView(rate)
-        root.addView(text("Best leading-zero result (benchmark only)", 13f, 0xFF91A4B7.toInt()))
-        best = text("0 bits", 20f)
-        root.addView(best)
-        status = text("Stopped. This test does not mine blocks or earn BTC.", 14f, 0xFFFFCC80.toInt())
-        root.addView(status)
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(22), dp(20), dp(28))
+            setBackgroundColor(bg)
+        }
+
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        brand.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_mining_btc)
+            layoutParams = LinearLayout.LayoutParams(dp(54), dp(54))
+        })
+        val brandText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        brandText.addView(label("MINING BTC", 19f, white, true))
+        brandText.addView(label("POW LAB  /  ANDROID", 10f, muted, true))
+        brand.addView(brandText, LinearLayout.LayoutParams(0, -2, 1f))
+        val livePill = label("●  LOCAL", 10f, green, true).apply {
+            setPadding(dp(11), dp(7), dp(11), dp(7))
+            background = rounded(Color.rgb(18, 52, 47), 30)
+        }
+        brand.addView(livePill)
+        page.addView(brand)
+
+        page.addView(label("DEVICE PERFORMANCE", 11f, muted, true).apply {
+            setPadding(0, dp(30), 0, dp(12))
+        })
+
+        val hero = card(22).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+        }
+        hero.addView(label("SHA-256d HASHRATE", 11f, muted, true))
+        rate = label("0.00", 42f, white, true)
+        rate.setPadding(0, dp(7), 0, 0)
+        hero.addView(rate)
+        hero.addView(label("hashes per second", 12f, muted, false))
+        val divider = View(this).apply { setBackgroundColor(Color.rgb(42, 57, 73)) }
+        hero.addView(divider, LinearLayout.LayoutParams(-1, dp(1)).apply {
+            topMargin = dp(18); bottomMargin = dp(14)
+        })
+        val metrics = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val metricA = metricColumn("TOTAL HASHES")
+        hashesView = metricA.second
+        val metricB = metricColumn("BEST RESULT")
+        best = metricB.second
+        metrics.addView(metricA.first, LinearLayout.LayoutParams(0, -2, 1f))
+        metrics.addView(metricB.first, LinearLayout.LayoutParams(0, -2, 1f))
+        hero.addView(metrics)
+        page.addView(hero)
+
+        page.addView(label("MINING SESSION", 11f, muted, true).apply {
+            setPadding(0, dp(24), 0, dp(12))
+        })
+        val session = card(18).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(17), dp(16), dp(17), dp(16))
+        }
+        val stateRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val dot = label("●", 12f, orange, true)
+        stateRow.addView(dot)
+        status = label("  READY TO BENCHMARK", 12f, white, true)
+        stateRow.addView(status)
+        session.addView(stateRow)
+        session.addView(label(
+            "This test measures double-SHA-256 throughput on your phone. It does not submit Bitcoin shares or earn BTC.",
+            12f, muted, false
+        ).apply { setPadding(0, dp(10), 0, 0) })
+        page.addView(session)
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
         startButton = Button(this).apply {
-            text = "START 30-SECOND TEST"
+            text = "START TEST"
+            isAllCaps = false
+            setTextColor(Color.BLACK)
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            background = rounded(orange, 14)
             setOnClickListener { startBenchmark() }
         }
         stopButton = Button(this).apply {
             text = "STOP"
+            isAllCaps = false
             isEnabled = false
-            setOnClickListener { stopBenchmark("Stopped by user.") }
+            setTextColor(white)
+            textSize = 14f
+            background = rounded(Color.rgb(47, 60, 75), 14)
+            setOnClickListener { stopBenchmark() }
         }
-        root.addView(startButton)
-        root.addView(stopButton)
-        root.addView(text(
-            "Thermal safety: short tests only. SHA-256d benchmark results are not valid Bitcoin shares. " +
-                "No pool connection or payout is implemented in this phase.",
-            12f, 0xFF91A4B7.toInt()
-        ))
-        setContentView(ScrollView(this).apply { addView(root) })
-        addressStatus.text = if (Bech32.isValidWitnessAddress(receivingAddress)) {
-            "Address checksum: valid (Bech32)"
-        } else {
-            "Address checksum: INVALID — do not use for payouts"
+        actions.addView(startButton, LinearLayout.LayoutParams(0, dp(54), 1f).apply {
+            rightMargin = dp(7); topMargin = dp(16)
+        })
+        actions.addView(stopButton, LinearLayout.LayoutParams(0, dp(54), 1f).apply {
+            leftMargin = dp(7); topMargin = dp(16)
+        })
+        page.addView(actions)
+
+        page.addView(label("PAYOUT ADDRESS", 11f, muted, true).apply {
+            setPadding(0, dp(26), 0, dp(10))
+        })
+        val wallet = card(16).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(15), dp(14), dp(15), dp(14))
         }
+        wallet.addView(label(receivingAddress, 12f, white, false))
+        wallet.addView(label("Configured destination · checksum validation pending", 10f, orange, false)
+            .apply { setPadding(0, dp(8), 0, 0) })
+        page.addView(wallet)
+
+        page.addView(label(
+            "RESEARCH BUILD 0.1.0  •  SNAPDRAGON 865 TARGET\nNo private keys are stored in this app. Never share your wallet recovery phrase.",
+            10f, muted, false
+        ).apply { setPadding(0, dp(24), 0, 0) })
+
+        setContentView(ScrollView(this).apply {
+            isFillViewport = true
+            addView(page)
+        })
     }
+
+    private fun metricColumn(title: String): Pair<LinearLayout, TextView> {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(label(title, 9f, muted, true))
+        val value = label("0", 19f, white, true)
+        value.setPadding(0, dp(5), 0, 0)
+        col.addView(value)
+        return col to value
+    }
+
+    private fun card(radius: Int) = LinearLayout(this).apply {
+        background = rounded(panel, radius)
+    }
+
+    private fun label(value: String, size: Float, color: Int, bold: Boolean) =
+        TextView(this).apply {
+            text = value
+            textSize = size
+            setTextColor(color)
+            typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        }
+
+    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radius).toFloat()
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun startBenchmark() {
         if (!running.compareAndSet(false, true)) return
         startButton.isEnabled = false
         stopButton.isEnabled = true
-        status.text = "Running a 30-second SHA-256d benchmark…"
+        status.text = "  RUNNING · 30 SECOND TEST"
         thread(name = "sha256d-benchmark") {
             val digest = MessageDigest.getInstance("SHA-256")
             val header = ByteArray(80)
@@ -89,6 +213,7 @@ class MainActivity : Activity() {
             val start = SystemClock.elapsedRealtime()
             var lastUi = start
             val end = start + 30_000L
+
             while (running.get() && SystemClock.elapsedRealtime() < end) {
                 header[76] = (nonce and 0xff).toByte()
                 header[77] = ((nonce ushr 8) and 0xff).toByte()
@@ -99,33 +224,39 @@ class MainActivity : Activity() {
                 bestBits = maxOf(bestBits, leadingZeroBits(second))
                 nonce = (nonce + 1) and 0xffffffffL
                 hashes++
+
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastUi >= 1000L) {
                     val elapsed = (now - start).coerceAtLeast(1L)
-                    val hps = hashes.toDouble() * 1000.0 / elapsed.toDouble()
+                    val hps = hashes.toDouble() * 1000.0 / elapsed
+                    val currentHashes = hashes
+                    val currentBest = bestBits
                     runOnUiThread {
                         rate.text = formatRate(hps)
-                        best.text = "$bestBits bits"
+                        hashesView.text = String.format(Locale.US, "%,d", currentHashes)
+                        best.text = "$currentBest bits"
                     }
                     lastUi = now
                 }
             }
+
             val elapsed = (SystemClock.elapsedRealtime() - start).coerceAtLeast(1L)
-            val finalRate = hashes.toDouble() * 1000.0 / elapsed.toDouble()
+            val finalRate = hashes.toDouble() * 1000.0 / elapsed
             running.set(false)
             runOnUiThread {
                 rate.text = formatRate(finalRate)
+                hashesView.text = String.format(Locale.US, "%,d", hashes)
                 best.text = "$bestBits bits"
-                status.text = "Completed: $hashes double-SHA-256 hashes in ${elapsed / 1000.0}s. No BTC mined."
+                status.text = "  TEST COMPLETE · NO BTC MINED"
                 startButton.isEnabled = true
                 stopButton.isEnabled = false
             }
         }
     }
 
-    private fun stopBenchmark(message: String) {
+    private fun stopBenchmark() {
         running.set(false)
-        status.text = message
+        status.text = "  STOPPING TEST…"
         stopButton.isEnabled = false
         startButton.isEnabled = true
     }
@@ -145,54 +276,11 @@ class MainActivity : Activity() {
         var count = 0
         for (byte in bytes) {
             val value = byte.toInt() and 0xff
-            if (value == 0) count += 8
-            else {
+            if (value == 0) count += 8 else {
                 count += Integer.numberOfLeadingZeros(value) - 24
                 break
             }
         }
         return count
-    }
-}
-
-private object Bech32 {
-    private const val CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-    private val generators = intArrayOf(
-        0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3
-    )
-
-    fun isValidWitnessAddress(address: String): Boolean {
-        if (address.length !in 14..90 || address != address.lowercase()) return false
-        val separator = address.lastIndexOf('1')
-        if (separator !in 1..address.length - 7) return false
-        val hrp = address.substring(0, separator)
-        if (hrp != "bc") return false
-        val values = ArrayList<Int>()
-        for (char in address.substring(separator + 1)) {
-            val value = CHARSET.indexOf(char)
-            if (value < 0) return false
-            values.add(value)
-        }
-        val expanded = ArrayList<Int>()
-        hrp.forEach { expanded.add(it.code shr 5) }
-        expanded.add(0)
-        hrp.forEach { expanded.add(it.code and 31) }
-        expanded.addAll(values)
-        val check = polymod(expanded)
-        val version = values.firstOrNull() ?: return false
-        if (version !in 0..16) return false
-        return if (version == 0) check == 1 else check == 0x2bc830a3
-    }
-
-    private fun polymod(values: List<Int>): Int {
-        var checksum = 1
-        for (value in values) {
-            val top = checksum ushr 25
-            checksum = ((checksum and 0x1ffffff) shl 5) xor value
-            for (i in 0..4) {
-                if (((top ushr i) and 1) != 0) checksum = checksum xor generators[i]
-            }
-        }
-        return checksum
     }
 }
