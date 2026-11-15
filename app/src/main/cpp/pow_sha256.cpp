@@ -4,6 +4,9 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <atomic>
+#include <thread>
+#include <mutex>
 #if defined(__ANDROID__) && defined(__aarch64__)
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
@@ -43,6 +46,41 @@ Digest hash_header_nonce(const uint8_t header[80],uint32_t nonce,const Midstate&
  uint8_t second[64]={0};std::memcpy(second,first,32);second[32]=0x80;second[62]=0x01;second[63]=0x00;
  uint32_t out[8];std::copy(IV,IV+8,out);compress(out,second,arm);
  Digest digest;for(int i=0;i<8;i++)store_be(digest.data()+4*i,out[i]);return digest;
+}
+bool digest_meets_stratum_target(const Digest& h,const Digest& target) {
+ for(int i=31;i>=0;i--) {
+  const uint8_t value=target[size_t(31-i)];
+  if(h[size_t(i)]<value) return true;
+  if(h[size_t(i)]>value) return false;
+ }
+ return true;
+}
+ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t count,unsigned threads,bool arm,const Digest& target) {
+ if(count==0 || threads==0 || uint64_t(start)+uint64_t(count)>(1ULL<<32)) return {0,{}};
+ const Midstate mid=make_midstate(header,arm);
+ std::atomic<uint32_t> next{0};
+ std::atomic<uint64_t> scanned{0};
+ std::mutex foundMutex;
+ std::vector<uint32_t> found;
+ std::vector<std::thread> workers;workers.reserve(threads);
+ for(unsigned t=0;t<threads;t++) workers.emplace_back([&] {
+  std::vector<uint32_t> local;
+  for(;;) {
+   const uint32_t offset=next.fetch_add(256,std::memory_order_relaxed);
+   if(offset>=count) break;
+   const uint32_t end=std::min<uint32_t>(count,offset+256);
+   for(uint32_t i=offset;i<end;i++) {
+    const uint32_t nonce=uint32_t(uint64_t(start)+i);
+    const Digest digest=hash_header_nonce(header,nonce,mid,arm);
+    scanned.fetch_add(1,std::memory_order_relaxed);
+    if(digest_meets_stratum_target(digest,target)) local.push_back(nonce);
+   }
+  }
+  if(!local.empty()) { std::lock_guard<std::mutex> lock(foundMutex);found.insert(found.end(),local.begin(),local.end()); }
+ });
+ for(auto& worker:workers) worker.join();
+ std::sort(found.begin(),found.end());
+ return {scanned.load(std::memory_order_relaxed),std::move(found)};
 }
 bool digest_meets_target_early(const Digest& h,const Digest& t) {
  // Bitcoin interprets the raw SHA digest as a little-endian uint256.
