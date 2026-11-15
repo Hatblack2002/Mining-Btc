@@ -11,6 +11,8 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
 import android.os.IBinder
 import android.provider.Settings
 import android.view.Gravity
@@ -23,6 +25,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.security.MessageDigest
+import java.util.Date
+import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -63,6 +67,10 @@ class MainActivity : Activity() {
     private lateinit var bestShareDiff: TextView
     private lateinit var bestShareBits: TextView
     private lateinit var bestShareHash: TextView
+    private lateinit var bestShareTime: TextView
+    private lateinit var topHashesLabel: TextView
+    private lateinit var hashFeedView: TextView
+    private lateinit var thermalDetail: TextView
     private lateinit var thermalBar: TextView
     private lateinit var totalHashesLabel: TextView
     private lateinit var startButton: Button
@@ -71,6 +79,9 @@ class MainActivity : Activity() {
     private var service: MiningService? = null
     private var bound = false
     private var benchRunning = false
+    private var feedPaused = false
+    private var feedRateHz = 30
+    private var latestStats: MinerStats? = null
 
     private val header = ByteArray(80).also {
         val h = "01000000" +
@@ -97,6 +108,7 @@ class MainActivity : Activity() {
 
     private val statsListener: (MinerStats) -> Unit = { stats ->
         runOnUiThread {
+            latestStats = stats
             rate.text = formatRate(stats.hashrate)
             hashes.text = "Hashes (sesión): " + String.format(Locale.US, "%,d", stats.totalHashes)
             totalHashesLabel.text = "Hashes totales (acumulados): " + String.format(Locale.US, "%,d", stats.totalHashes)
@@ -119,13 +131,19 @@ class MainActivity : Activity() {
 
             bestShareDiff.text = "Best share diff: " + formatDifficulty(stats.bestShareDifficulty)
             bestShareBits.text = "Bits cero: " + stats.bestShareBits + " / ~78 (red Bitcoin)"
-            bestShareHash.text = if (stats.bestShareHashHex.isNotBlank())
-                "Hash: " + stats.bestShareHashHex.take(16) + "…" + stats.bestShareHashHex.takeLast(8)
-            else "Hash: —"
+            bestShareHash.text = if (stats.bestShareHashHex.isNotBlank()) "Hash: " + stats.bestShareHashHex else "Hash: —"
+            bestShareTime.text = if (stats.bestShareTimestampMs > 0L)
+                "Nonce: %08x · Hora: %s".format(Locale.US, stats.bestShareNonce, SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(stats.bestShareTimestampMs)))
+            else "Nonce: — · Hora: —"
+            topHashesLabel.text = stats.topHashes.mapIndexed { index, entry ->
+                "%2d  %2db  %08x  %s".format(Locale.US, index + 1, entry.bits, entry.nonce, entry.hashHex)
+            }.joinToString("\n").ifBlank { "Esperando hashes…" }
+            if (!feedPaused) renderHashFeed(stats.hashFeed)
 
             val temp = stats.cpuTempC
             val threads = stats.effectiveThreads
-            thermalBar.text = "CPU: %.1f°C · %d/%d hilos".format(Locale.US, temp, threads, 8)
+            thermalBar.text = "CPU: %.1f°C · batería: %.1f°C · hilos: %d/%d".format(Locale.US, temp, stats.batteryTempC, threads, 8)
+            thermalDetail.text = "Sensor CPU: ${stats.cpuSensorName} · PowerManager thermal status: ${thermalStatusName(stats.thermalStatus)}"
             thermalBar.setTextColor(
                 when {
                     temp >= 85.0 -> red
@@ -294,12 +312,34 @@ class MainActivity : Activity() {
         s.addView(bestShareDiff)
         bestShareBits = label("Bits cero: 0 / ~78 (red Bitcoin)", 10f, muted, false)
         s.addView(bestShareBits)
-        bestShareHash = label("Hash: —", 10f, muted, false)
+        bestShareHash = label("Hash: —", 9f, muted, false).apply { typeface = Typeface.MONOSPACE }
         s.addView(bestShareHash)
+        bestShareTime = label("Nonce: — · Hora: —", 10f, muted, false)
+        s.addView(bestShareTime)
 
         // Thermal + thread indicator
-        thermalBar = label("CPU: 0.0°C · 0/8 hilos", 11f, muted, true).padTop(12)
+        thermalBar = label("CPU: 0.0°C · batería: 0.0°C · hilos: 0/8", 11f, muted, true).padTop(12)
         s.addView(thermalBar)
+        thermalDetail = label("Sensor CPU: — · PowerManager thermal status: —", 9f, muted, false)
+        s.addView(thermalDetail)
+        s.addView(label("TOP 10 MEJORES HASHES · MUESTRA EN VIVO", 10f, orange, true).padTop(14))
+        topHashesLabel = label("Esperando hashes…", 9f, muted, false).apply { typeface = Typeface.MONOSPACE }
+        s.addView(topHashesLabel)
+        s.addView(label("HASH FEED EN VIVO · MÁXIMO 200 FILAS", 10f, orange, true).padTop(14))
+        hashFeedView = label("Esperando hashes nativos…", 9f, muted, false).apply { typeface = Typeface.MONOSPACE; maxLines = 200 }
+        s.addView(hashFeedView)
+        val feedControls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        feedControls.addView(action("10/s") { setFeedRate(10) }, LinearLayout.LayoutParams(0, dp(40), 1f))
+        feedControls.addView(action("30/s") { setFeedRate(30) }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(4) })
+        feedControls.addView(action("60/s") { setFeedRate(60) }, LinearLayout.LayoutParams(0, dp(40), 1f).apply { leftMargin = dp(4) })
+        s.addView(feedControls)
+        val feedActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        feedActions.addView(action("PAUSAR / REANUDAR") {
+            feedPaused = !feedPaused
+            if (!feedPaused) latestStats?.let { renderHashFeed(it.hashFeed) }
+        }, LinearLayout.LayoutParams(0, dp(42), 1f))
+        feedActions.addView(action("EXPORTAR CSV") { exportMiningCsv() }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(6) })
+        s.addView(feedActions)
         p.addView(s)
 
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -486,6 +526,57 @@ class MainActivity : Activity() {
                 } catch (_: Exception) {}
             }
         }
+    }
+
+    private fun setFeedRate(rate: Int) {
+        feedRateHz = rate
+        service?.setHashFeedRate(rate)
+        toast("Hash feed configurado: $rate filas/s")
+    }
+
+    private fun renderHashFeed(entries: List<HashFeedEntry>) {
+        val out = SpannableStringBuilder()
+        for (entry in entries) {
+            val time = SimpleDateFormat("HH:mm:ss.SS", Locale.US).format(Date(entry.timestampMs))
+            val line = "%s  %08x  %2db  %s  %s\n".format(Locale.US, time, entry.nonce, entry.bits, entry.hashHex, entry.status)
+            val start = out.length
+            out.append(line)
+            val color = when (entry.status) {
+                "accepted" -> green
+                "rejected" -> red
+                "threshold", "pending" -> orange
+                else -> muted
+            }
+            out.setSpan(ForegroundColorSpan(color), start, out.length, SpannableStringBuilder.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        hashFeedView.text = out
+    }
+
+    private fun thermalStatusName(status: Int): String = when (status) {
+        0 -> "NONE"; 1 -> "LIGHT"; 2 -> "MODERATE"; 3 -> "SEVERE"
+        4 -> "CRITICAL"; 5 -> "EMERGENCY"; 6 -> "SHUTDOWN"; else -> "UNAVAILABLE"
+    }
+
+    private fun exportMiningCsv() {
+        val stats = latestStats
+        val telemetry = service?.telemetryCsvText().orEmpty()
+        val feed = buildString {
+            append("\n# hash_feed_sample\n")
+            append("timestamp_ms,nonce,bits,difficulty,hash,status\n")
+            stats?.hashFeed?.forEach { row ->
+                append("${row.timestampMs},${row.nonce},${row.bits},${row.difficulty},${row.hashHex},${row.status}\n")
+            }
+            append("\n# top10\n")
+            stats?.topHashes?.forEach { row ->
+                append("${row.timestampMs},${row.nonce},${row.bits},${row.difficulty},${row.hashHex},${row.status}\n")
+            }
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/csv"
+            putExtra(Intent.EXTRA_SUBJECT, "Mining BTC telemetry")
+            putExtra(Intent.EXTRA_TEXT, telemetry + feed)
+        }
+        startActivity(Intent.createChooser(send, "Exportar telemetría y hash feed"))
     }
 
     private fun toast(msg: String) {
