@@ -34,9 +34,9 @@ static void store_be(uint8_t* p,uint32_t x) {
 }
 Digest hash_header_nonce(const uint8_t header[80],uint32_t nonce,const Midstate& mid,bool arm) {
  uint8_t block[64]={0};
- std::memcpy(block,header+64,16);
- block[16]=uint8_t(nonce);block[17]=uint8_t(nonce>>8);block[18]=uint8_t(nonce>>16);block[19]=uint8_t(nonce>>24);
- block[20]=0x80;block[62]=0x02;block[63]=0x80; // 640-bit header length
+ std::memcpy(block,header+64,12);
+ block[12]=uint8_t(nonce);block[13]=uint8_t(nonce>>8);block[14]=uint8_t(nonce>>16);block[15]=uint8_t(nonce>>24);
+ block[16]=0x80;block[62]=0x02;block[63]=0x80; // 640-bit header length
  uint32_t s[8];std::copy(mid.begin(),mid.end(),s);
  compress(s,block,arm);
  uint8_t first[32];for(int i=0;i<8;i++)store_be(first+4*i,s[i]);
