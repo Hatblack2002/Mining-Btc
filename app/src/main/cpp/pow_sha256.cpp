@@ -75,7 +75,7 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
  std::vector<std::thread> workers;workers.reserve(threads);
  for(unsigned t=0;t<threads;t++) workers.emplace_back([&] {
   std::vector<uint32_t> local; std::vector<uint32_t> localBlocks;
-  Digest localBest{}; uint32_t localBestNonce=0; bool localHasBest=false; std::vector<FeedSample> localFeed;
+  Digest localBest{}; uint32_t localBestNonce=0; bool localHasBest=false; std::array<FeedSample,8> localFeed{}; uint32_t localFeedCount=0;
   for(;;) {
    const uint32_t offset=next.fetch_add(256,std::memory_order_relaxed);
    if(offset>=count) break;
@@ -97,7 +97,8 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
   std::lock_guard<std::mutex> lock(resultMutex);
   found.insert(found.end(),local.begin(),local.end());
   blocks.insert(blocks.end(),localBlocks.begin(),localBlocks.end());
-  feed.insert(feed.end(),localFeed.begin(),localFeed.end());
+  const uint32_t feedEntries=std::min<uint32_t>(localFeedCount,uint32_t(localFeed.size()));
+  for(uint32_t sample=0;sample<feedEntries;sample++) feed.push_back(localFeed[sample]);
   if(localHasBest && (!hasBest || digest_numeric_less(localBest,bestDigest))) {
    bestDigest=localBest; bestNonce=localBestNonce; hasBest=true;
   }
