@@ -10,6 +10,6 @@ object NativePowEngine {
     external fun nativeCapabilities(): String
     external fun nativeSelfTest(): String
     external fun nativeHashHeader(header80: ByteArray, nonce: Long, useArmSha2: Boolean): ByteArray
-    /** Returns [hashes, activeThreads, detectedCpuThreads]. */
+    /** Returns [hashes, activeThreads, detectedCpuThreads]. affinityMode: 0=OS, 1=performance, 2=efficiency. */
     external fun nativeBenchmark(header80: ByteArray, durationMs: Long, threads: Int, useArmSha2: Boolean, affinityMode: Int): LongArray
 }
