@@ -37,10 +37,10 @@ int main() {
   std::cerr<<"FAIL extranonce2 encoding\\n";return 7;
  }
  std::cout<<"PASS extranonce2 encoding\\n";
- Digest candidate{}; Digest limit{}; limit[0]=0x10;
- candidate[0]=0x11;
+ Digest candidate{}; Digest limit{}; limit[31]=0x10;
+ candidate[31]=0x11;
  if(digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target rejection\\n";return 5;}
- candidate[0]=0x0f;
+ candidate[31]=0x0f;
  if(!digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target acceptance\\n";return 6;}
  std::cout<<"PASS early target word rejection\\n";
  return 0;
