@@ -66,6 +66,9 @@ data class MinerStats(
     val cpuSensorName: String = "unavailable",
     val batteryTempC: Double = 0.0,
     val thermalStatus: Int = -1,
+    val networkBitsHex: String = "",
+    val networkDifficulty: Double = 0.0,
+    val bitsMissing: Int = 0,
     val cpuTempC: Double = 0.0,
     val effectiveThreads: Int = 0
 )
@@ -84,6 +87,7 @@ data class MinerStats(
 class StratumMiner(
     private val config: PoolConfig,
     private val initialStats: MinerStats = MinerStats("Idle"),
+    private val onBlockFound: (BlockFoundRecord) -> Unit = {},
     private val onStats: (MinerStats) -> Unit
 ) {
     private val running = AtomicBoolean(false)
@@ -91,6 +95,10 @@ class StratumMiner(
     private val jobRef = AtomicReference<PoolJob?>(null)
     private val difficulty = AtomicReference(1.0)
     private val targetRef = AtomicReference(targetFor(1.0))
+    private val networkTargetRef = AtomicReference(ByteArray(32))
+    @Volatile private var networkBitsHex = ""
+    @Volatile private var networkDifficulty = 0.0
+    private val reportedBlockNonces = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
     private val extranonce1 = AtomicReference("")
     private val extranonce2Size = AtomicReference(4)
     private val hashes = AtomicLong(initialStats.totalHashes)
@@ -402,12 +410,27 @@ class StratumMiner(
                             bestShareHashHex = toHex(shareHash)
                             lastMessage = "NEW BEST SHARE · diff %.3e · %d bits".format(Locale.US, shareDiff, shareBits)
                         }
+                        val blockRecord = if (BitcoinTarget.meetsTarget(shareHash, networkTargetRef.get()) &&
+                            reportedBlockNonces.add(shareNonce)) {
+                            val blockHeader = header.copyOf()
+                            blockHeader[76] = shareNonce.toByte()
+                            blockHeader[77] = (shareNonce ushr 8).toByte()
+                            blockHeader[78] = (shareNonce ushr 16).toByte()
+                            blockHeader[79] = (shareNonce ushr 24).toByte()
+                            BlockFoundRecord(blockHeader, toHex(shareHash.reversedArray()), shareNonce,
+                                System.currentTimeMillis(), job.nbits, networkDifficulty)
+                        } else null
                         val id = requestId.incrementAndGet()
                         val nonceHex = String.format(Locale.US, "%08x", shareNonce)
                         val params = JSONArray().put(config.username).put(job.id).put(currentExtra).put(job.ntime).put(nonceHex)
                         submitIds[id] = shareNonce
-                        addFeedEntry(shareNonce, shareHash, "pending")
+                        addFeedEntry(shareNonce, shareHash, if (blockRecord != null) "block" else "pending")
+                        // Submit the network-target share immediately, before alert I/O.
                         send(JSONObject().put("id", id).put("method", "mining.submit").put("params", params))
+                        if (blockRecord != null) {
+                            lastMessage = "BLOCK FOUND · network target met · nonce $nonceHex"
+                            onBlockFound(blockRecord)
+                        }
                     }
                     val now = System.nanoTime()
                     if (now - lastRateAt >= 1_000_000_000L) {
@@ -445,8 +468,14 @@ class StratumMiner(
                         val p = obj.getJSONArray("params")
                         val branchesJson = p.getJSONArray(4)
                         val branches = (0 until branchesJson.length()).map { branchesJson.getString(it) }
-                        jobRef.set(PoolJob(p.getString(0), p.getString(1), p.getString(2), p.getString(3),
-                            branches, p.getString(5), p.getString(6), p.getString(7), p.optBoolean(8)))
+                        val newJob = PoolJob(p.getString(0), p.getString(1), p.getString(2), p.getString(3),
+                            branches, p.getString(5), p.getString(6), p.getString(7), p.optBoolean(8))
+                        val networkTarget = BitcoinTarget.fromCompact(newJob.nbits)
+                        networkTargetRef.set(networkTarget)
+                        networkBitsHex = newJob.nbits.lowercase(Locale.US)
+                        networkDifficulty = BitcoinTarget.difficulty(networkTarget)
+                        reportedBlockNonces.clear()
+                        jobRef.set(newJob)
                         if (p.optBoolean(8)) lastMessage = "New clean job received"
                     }
                     "mining.set_difficulty" -> {
