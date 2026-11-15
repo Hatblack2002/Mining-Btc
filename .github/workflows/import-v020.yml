@@ -31,7 +31,7 @@ jobs:
           root = pathlib.Path('/tmp/mining-btc-v020/Mining-Btc')
           repo = pathlib.Path('.')
           expected = {
-            'app/build.gradle.kts': 'a3a3b6e1c6f49f4a3a9a0f7e8f7f8a0a00000000',
+            'app/build.gradle.kts': 'c845b7804d5a474e0e8080c42f47cdeb530d4527',
             'app/src/main/java/com/vertil/miningbtc/StratumMiner.kt': '5ae38cbb661d8f490448ba9f4d271718d7e8aa5f',
             'app/src/main/java/com/vertil/miningbtc/MainActivity.kt': 'f870f15f54e40adb607c7ebe496673081a0bb1ea',
             'app/src/main/java/com/vertil/miningbtc/MiningService.kt': '66878d5dee56b00f0113db8a86cfa7a42cbe25fa',
