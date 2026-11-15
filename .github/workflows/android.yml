@@ -43,6 +43,8 @@ jobs:
         run: python3 -m unittest -v tools/test_stratum_mock.py
       - name: Validate local Stratum mock server syntax
         run: python3 -m py_compile tools/stratum_mock_pool.py tools/test_pow_vectors.py tools/test_stratum_mock.py
+      - name: Run wallet and Bech32 regression tests
+        run: gradle --no-daemon testDebugUnitTest --stacktrace
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug --stacktrace --info 2>&1 | tee gradle-build.log
       - name: Upload build diagnostics on failure
