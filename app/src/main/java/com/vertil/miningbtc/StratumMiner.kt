@@ -34,13 +34,15 @@ data class MinerStats(
     val difficultySuggestion: String = "",
     val stale: Long = 0,
     val submitLatencyMs: Long = -1,
-    val bestShareDifficulty: Double = 0.0
+    val bestShareDifficulty: Double = 0.0,
+    val difficultyConfirmedByPool: Boolean = false
 )
 
 class StratumMiner(private val config: PoolConfig, private val onStats: (MinerStats) -> Unit) {
     private val running = AtomicBoolean(false)
     private val jobRef = AtomicReference<PoolJob?>(null)
     private val difficulty = AtomicReference(1.0)
+    @Volatile private var difficultyConfirmedByPool = false
     private val targetRef = AtomicReference(targetFor(1.0))
     private val extranonce1 = AtomicReference("")
     private val extranonce2Size = AtomicReference(4)
@@ -310,13 +312,17 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                         val branches = (0 until branchesJson.length()).map { branchesJson.getString(it) }
                         val nextJob = PoolJob(p.getString(0), p.getString(1), p.getString(2), p.getString(3),
                             branches, p.getString(5), p.getString(6), p.getString(7), p.optBoolean(8))
-                        synchronized(jobGate) { jobRef.set(nextJob) }
+                        synchronized(jobGate) {
+                            if (nextJob.clean) jobRef.set(null)
+                            jobRef.set(nextJob)
+                        }
                         if (p.optBoolean(8)) lastMessage = "New clean job received"
                     }
                     "mining.set_difficulty" -> {
                         val p = obj.getJSONArray("params")
                         val nextDifficulty = p.getDouble(0).coerceAtLeast(0.00000001)
                         difficulty.set(nextDifficulty)
+                        difficultyConfirmedByPool = true
                         targetRef.set(targetFor(nextDifficulty))
                     }
                     "client.reconnect" -> {
@@ -396,7 +402,7 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
     }
 
     private fun emit(state: String, rate: Double = 0.0) {
-        onStats(MinerStats(state, rate, hashes.get(), accepted.get(), rejected.get(), difficulty.get(), lastMessage, latencyMs.get(), rejectionReason, difficultySuggestionStatus, stale.get(), submitLatencyMs.get(), bestShareDifficulty.get().toDouble()))
+        onStats(MinerStats(state, rate, hashes.get(), accepted.get(), rejected.get(), difficulty.get(), lastMessage, latencyMs.get(), rejectionReason, difficultySuggestionStatus, stale.get(), submitLatencyMs.get(), bestShareDifficulty.get().toDouble(), difficultyConfirmedByPool))
     }
 
     private fun hex(value: String): ByteArray {
