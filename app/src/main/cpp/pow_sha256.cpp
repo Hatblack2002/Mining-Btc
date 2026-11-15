@@ -1,5 +1,6 @@
 #include "pow_sha256.h"
 #include <cstring>
+#include <algorithm>
 #include <string>
 #include <sstream>
 #include <iomanip>
