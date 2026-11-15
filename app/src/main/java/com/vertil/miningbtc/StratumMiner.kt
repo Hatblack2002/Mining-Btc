@@ -190,17 +190,9 @@ class StratumMiner(
     }
 
     /**
-     * Reads the CPU thermal zone files under /sys/class/thermal every 5 seconds,
-     * picks the hottest reading (CPU zone typically reports as a small integer
-     * in millidegrees C), and adjusts the effective thread count:
-     *
-     *   < 75 C  -> 8 threads (full speed)
-     *   75-85 C -> 4 threads (half speed)
-     *   > 85 C  -> 0 threads (paused; session stays alive via keepalive)
-     *
-     * The S20 FE will hit 75 C within a few minutes of sustained 8-thread
-     * SHA-256d. Without this backoff the phone thermal-shutdowns in ~20 min
-     * and you lose hours of hashrate plus the Stratum session.
+     * CPU temperature is telemetry only. Worker count is fixed at eight.
+     * Only official PowerManager SEVERE-or-higher pauses hashing; resume
+     * requires the official status to remain below SEVERE for 30 seconds.
      */
     private fun runThermalMonitor() {
         val zones = discoverThermalZones()
@@ -218,19 +210,14 @@ class StratumMiner(
                     thermalCoolSinceMs = 0L
                 }
             }
-            when {
-                severeThermalLatched.get() || temp >= 85.0 -> {
-                    effectiveThreads.set(0)
-                    paused.set(true)
-                }
-                officialThermalStatus == PowerThermalStatus.MODERATE || temp >= 75.0 -> {
-                    effectiveThreads.set(4)
-                    paused.set(false)
-                }
-                else -> {
-                    effectiveThreads.set(maxThreads)
-                    paused.set(false)
-                }
+            if (severeThermalLatched.get()) {
+                effectiveThreads.set(0)
+                paused.set(true)
+                lastMessage = "PAUSA TÉRMICA · PowerManager SEVERE+ · esperando 30 s por debajo de SEVERE"
+            } else {
+                // MODERATE and sensor temperature are telemetry only: keep all 8 workers.
+                effectiveThreads.set(maxThreads)
+                paused.set(false)
             }
             try { Thread.sleep(2500) } catch (_: InterruptedException) { break }
         }
@@ -769,7 +756,7 @@ class StratumMiner(
                 networkDifficulty = networkDifficulty,
                 bitsMissing = (BitcoinTarget.leadingZeroBits(networkTargetRef.get()) - bestShareBits).coerceAtLeast(0),
                 cpuTempC = cpuTempC.get(),
-                effectiveThreads = effectiveThreads.get(),
+                effectiveThreads = if (paused.get()) 0 else NativePowEngine.nativeGetLastScanWorkerCount().getOrElse(0) { 0L }.toInt(),
                 staleShares = staleShares.get(),
                 lastSubmitLatencyMs = lastSubmitLatencyMs.get()
             )
