@@ -50,6 +50,9 @@ class MiningService : Service() {
     @Volatile private var batteryTempC = 0.0
     @Volatile private var officialThermalStatus = -1
     @Volatile private var lastTelemetryLogMs = 0L
+    @Volatile private var lastStatsPersistMs = 0L
+    @Volatile private var lastNotificationMs = 0L
+    @Volatile private var lastPersistedBestHash = ""
     private val telemetryFile by lazy { File(filesDir, "mining-telemetry.csv") }
     private val thermalListener = PowerManager.OnThermalStatusChangedListener { status -> officialThermalStatus = status }
     private var miner: StratumMiner? = null
@@ -157,20 +160,28 @@ class MiningService : Service() {
         for (l in listeners) {
             try { l(enriched) } catch (_: Exception) {}
         }
-        updateNotification(enriched.message, enriched.hashrate, enriched.bestShareDifficulty, enriched.bestShareBits)
+        val now = System.currentTimeMillis()
+        if (now - lastNotificationMs >= 1000L) {
+            updateNotification(enriched.message, enriched.hashrate, enriched.bestShareDifficulty, enriched.bestShareBits)
+            lastNotificationMs = now
+        }
         appendTelemetryIfDue(enriched)
 
-        // Persist totals across reboots. Best share and counters survive app kills.
-        prefs.edit()
-            .putLong("totalHashes", stats.totalHashes)
-            .putLong("totalAccepted", stats.accepted)
-            .putLong("totalRejected", stats.rejected)
-            .putString("bestShareHashHex", enriched.bestShareHashHex)
-            .putString("bestShareDifficulty", enriched.bestShareDifficulty.toString())
-            .putInt("bestShareBits", enriched.bestShareBits)
-            .putLong("bestShareTimestampMs", enriched.bestShareTimestampMs)
-            .putLong("bestShareNonce", enriched.bestShareNonce)
-            .apply()
+        // Avoid SharedPreferences I/O on every 30 Hz feed update.
+        if (now - lastStatsPersistMs >= 10_000L || enriched.bestShareHashHex != lastPersistedBestHash) {
+            prefs.edit()
+                .putLong("totalHashes", enriched.totalHashes)
+                .putLong("totalAccepted", enriched.accepted)
+                .putLong("totalRejected", enriched.rejected)
+                .putString("bestShareHashHex", enriched.bestShareHashHex)
+                .putString("bestShareDifficulty", enriched.bestShareDifficulty.toString())
+                .putInt("bestShareBits", enriched.bestShareBits)
+                .putLong("bestShareTimestampMs", enriched.bestShareTimestampMs)
+                .putLong("bestShareNonce", enriched.bestShareNonce)
+                .apply()
+            lastStatsPersistMs = now
+            lastPersistedBestHash = enriched.bestShareHashHex
+        }
     }
 
     private fun onLoadStats(prefs: SharedPreferences): MinerStats {
