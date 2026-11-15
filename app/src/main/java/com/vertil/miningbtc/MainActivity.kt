@@ -83,6 +83,7 @@ class MainActivity : Activity() {
     private var feedPaused = false
     private var feedRateHz = 30
     private var latestStats: MinerStats? = null
+    private val renderedFeedStatuses = LinkedHashMap<String, String>()
 
     private val header = ByteArray(80).also {
         val h = "01000000" +
@@ -131,7 +132,7 @@ class MainActivity : Activity() {
                 (if (stats.rejectionReason.isNotBlank()) " · Rejection: " + stats.rejectionReason else "") +
                 (if (stats.difficultySuggestion.isNotBlank()) " · Diff req: " + stats.difficultySuggestion else "")
 
-            bestShareDiff.text = "Best share diff: " + formatDifficulty(stats.bestShareDifficulty)
+            bestShareDiff.text = "Dificultad equivalente: " + formatDifficulty(stats.bestShareDifficulty)
             bestShareBits.text = "Bits cero: " + stats.bestShareBits + " / ~78 (red Bitcoin)"
             bestShareHash.text = if (stats.bestShareHashHex.isNotBlank()) "Hash: " + stats.bestShareHashHex else "Hash: —"
             bestShareTime.text = if (stats.bestShareTimestampMs > 0L)
@@ -543,8 +544,18 @@ class MainActivity : Activity() {
     }
 
     private fun renderHashFeed(entries: List<HashFeedEntry>) {
-        val out = SpannableStringBuilder()
+        val changedStatus = entries.any { entry ->
+            val key = "${entry.timestampMs}:${entry.nonce}"
+            renderedFeedStatuses.containsKey(key) && renderedFeedStatuses[key] != entry.status
+        }
+        if (changedStatus) {
+            renderedFeedStatuses.clear()
+            hashFeedView.text = ""
+        }
+        val out = SpannableStringBuilder(hashFeedView.text)
         for (entry in entries) {
+            val key = "${entry.timestampMs}:${entry.nonce}"
+            if (renderedFeedStatuses.containsKey(key)) continue
             val time = SimpleDateFormat("HH:mm:ss.SS", Locale.US).format(Date(entry.timestampMs))
             val line = "%s  %08x  %2db  %s  %s\n".format(Locale.US, time, entry.nonce, entry.bits, entry.hashHex, entry.status)
             val start = out.length
@@ -552,10 +563,18 @@ class MainActivity : Activity() {
             val color = when (entry.status) {
                 "accepted" -> green
                 "rejected" -> red
-                "threshold", "pending" -> orange
+                "threshold", "pending", "block" -> orange
                 else -> muted
             }
             out.setSpan(ForegroundColorSpan(color), start, out.length, SpannableStringBuilder.SPAN_EXCLUSIVE_EXCLUSIVE)
+            renderedFeedStatuses[key] = entry.status
+        }
+        while (out.count { it == '\n' } > 200) {
+            val firstBreak = out.indexOf("\n")
+            if (firstBreak < 0) break
+            out.delete(0, firstBreak + 1)
+            val firstKey = renderedFeedStatuses.keys.firstOrNull() ?: break
+            renderedFeedStatuses.remove(firstKey)
         }
         hashFeedView.text = out
     }
