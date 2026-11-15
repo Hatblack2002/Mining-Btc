@@ -32,6 +32,11 @@ int main() {
   std::cerr<<"FAIL extranonce2 epoch rotation\\n";return 4;
  }
  std::cout<<"PASS disjoint nonce range boundary\\nPASS extranonce2 epoch rotation\\n";
+ auto extra=extranonce2_for_epoch(next.extranonce_epoch,4);
+ if(extra.size()!=4 || extra[0]!=0 || extra[1]!=0 || extra[2]!=0 || extra[3]!=1) {
+  std::cerr<<"FAIL extranonce2 encoding\\n";return 7;
+ }
+ std::cout<<"PASS extranonce2 encoding\\n";
  Digest candidate{}; Digest limit{}; limit[0]=0x10;
  candidate[0]=0x11;
  if(digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target rejection\\n";return 5;}
