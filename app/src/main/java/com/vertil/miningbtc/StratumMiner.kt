@@ -177,8 +177,6 @@ class StratumMiner(
         if (status >= PowerThermalStatus.SEVERE) {
             severeThermalLatched.set(true)
             thermalCoolSinceMs = 0L
-        } else if (status > PowerThermalStatus.LIGHT) {
-            thermalCoolSinceMs = 0L
         }
     }
 
@@ -203,7 +201,7 @@ class StratumMiner(
             cpuSensorName.set(reading.second)
             val nowMs = System.currentTimeMillis()
             if (severeThermalLatched.get()) {
-                if (officialThermalStatus in PowerThermalStatus.NONE..PowerThermalStatus.LIGHT) {
+                if (officialThermalStatus in PowerThermalStatus.NONE..PowerThermalStatus.MODERATE) {
                     if (thermalCoolSinceMs == 0L) thermalCoolSinceMs = nowMs
                     if (nowMs - thermalCoolSinceMs >= 30_000L) severeThermalLatched.set(false)
                 } else {
@@ -384,7 +382,7 @@ class StratumMiner(
                 // submit timeouts active so the pool session does not go stale.
                 if (paused.get()) {
                     val temp = cpuTempC.get()
-                    lastMessage = "Pausa térmica: %.1f°C · sesión viva".format(Locale.US, temp)
+                    lastMessage = "PAUSA TÉRMICA · PowerManager SEVERE+ · %.1f°C · reanudación tras 30 s por debajo de SEVERE".format(Locale.US, temp)
                     emit("Throttled")
                     try { Thread.sleep(2000) } catch (_: InterruptedException) { break }
                     continue
