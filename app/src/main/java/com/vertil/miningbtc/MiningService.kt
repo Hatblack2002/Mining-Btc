@@ -37,6 +37,8 @@ class MiningService : Service() {
     companion object {
         const val CHANNEL_ID = "mining_btc_channel"
         const val NOTIFICATION_ID = 1
+        const val BLOCK_CHANNEL_ID = "mining_btc_block_found"
+        const val BLOCK_NOTIFICATION_ID = 2
         const val ACTION_START = "com.vertil.miningbtc.START"
         const val ACTION_STOP = "com.vertil.miningbtc.STOP"
         private const val PREFS_NAME = "pool_config"
@@ -65,6 +67,7 @@ class MiningService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        createBlockNotificationChannel()
         registerThermalStatusListener()
         startEnvironmentMonitor()
     }
@@ -102,7 +105,8 @@ class MiningService : Service() {
         running = true
         miner = StratumMiner(
             PoolConfig(host, port, user, pass, tls),
-            onLoadStats(prefs)
+            onLoadStats(prefs),
+            onBlockFound = { record -> handleBlockFound(record) }
         ) { stats ->
             onStats(stats, prefs)
         }
@@ -190,6 +194,74 @@ class MiningService : Service() {
             bestShareTimestampMs = bestTimestamp,
             bestShareNonce = bestNonce
         )
+    }
+
+    fun simulateBlockAlert() {
+        val fakeHeader = ByteArray(80)
+        handleBlockFound(BlockFoundRecord(
+            header80 = fakeHeader,
+            hashHex = "0000000000000000000000000000000000000000000000000000000000000000",
+            nonce = 0L,
+            timestampMs = System.currentTimeMillis(),
+            compactBits = "FAKE-EASY-TARGET",
+            networkDifficulty = 0.0,
+            simulated = true
+        ))
+    }
+
+    private fun handleBlockFound(record: BlockFoundRecord) {
+        try {
+            val file = File(filesDir, "found-blocks.jsonl")
+            val headerHex = record.header80.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+            val line = org.json.JSONObject()
+                .put("timestamp_ms", record.timestampMs)
+                .put("hash", record.hashHex)
+                .put("nonce", record.nonce)
+                .put("compact_bits", record.compactBits)
+                .put("network_difficulty", record.networkDifficulty)
+                .put("simulated", record.simulated)
+                .put("header80_hex", headerHex)
+            synchronized(file) { file.appendText(line.toString() + "\n") }
+            val activity = Intent(this, BlockFoundActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("hash", record.hashHex)
+                putExtra("nonce", record.nonce)
+                putExtra("timestamp_ms", record.timestampMs)
+                putExtra("header80_hex", headerHex)
+                putExtra("simulated", record.simulated)
+                putExtra("compact_bits", record.compactBits)
+            }
+            val pi = PendingIntent.getActivity(this, 2, activity,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val notification = Notification.Builder(this, BLOCK_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_mining_btc)
+                .setContentTitle(if (record.simulated) "SIMULACIÓN: BLOQUE ENCONTRADO" else "BLOQUE ENCONTRADO")
+                .setContentText("Hash ${record.hashHex} · nonce ${record.nonce}")
+                .setCategory(Notification.CATEGORY_EVENT)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setAutoCancel(true)
+                .setFullScreenIntent(pi, true)
+                .setContentIntent(pi)
+                .setVibrate(longArrayOf(0, 700, 250, 700, 250, 1200))
+                .setSound(android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION))
+                .build()
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(BLOCK_NOTIFICATION_ID, notification)
+        } catch (_: Exception) {}
+    }
+
+    private fun createBlockNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                BLOCK_CHANNEL_ID, "Bitcoin block found", NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Critical alert when a hash meets the Bitcoin network target"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 700, 250, 700, 250, 1200)
+                setSound(android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION), null)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+        }
     }
 
     private fun registerThermalStatusListener() {
