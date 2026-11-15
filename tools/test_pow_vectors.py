@@ -29,7 +29,7 @@ class BitcoinHeaderVectors(unittest.TestCase):
     def test_genesis_coinbase_merkle_root(self):
         txid_internal = dsha(bytes.fromhex(GENESIS_COINBASE))
         self.assertEqual(txid_internal[::-1].hex(),
-                         "4a5e1e4baab89f3a32518a88c31bc87f618f77673e2ca7b2b7127ba6e7a3e?")
+                         "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b")
 
     def test_genesis_header_serialization_and_pow(self):
         self.assertEqual(len(GENESIS_HEADER), 80)
