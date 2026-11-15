@@ -38,7 +38,14 @@ jobs:
           ctest --test-dir build/native-tests --output-on-failure
           ./build/native-tests/pow_sha256_test
       - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon assembleDebug --stacktrace --info 2>&1 | tee gradle-build.log
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mining-btc-build-diagnostics
+          path: gradle-build.log
+          if-no-files-found: ignore
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
