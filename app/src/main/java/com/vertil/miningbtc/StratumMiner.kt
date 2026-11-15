@@ -218,15 +218,17 @@ class StratumMiner(private val config: PoolConfig, private val onStats: (MinerSt
                     val batchCount = minOf(nativeBatchSize.toLong(), remaining).toInt()
                     var scanTarget = targetRef.get()
                     var scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, nativeThreads, useArm, scanTarget)
+                    var actualScanned = scan.getOrElse(0) { 0L }
                     while (targetRef.get() !== scanTarget && jobRef.get() === activeJob) {
                         scanTarget = targetRef.get()
                         scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, nativeThreads, useArm, scanTarget)
+                        actualScanned += scan.getOrElse(0) { 0L }
                     }
                     val scanned = scan.getOrElse(0) { 0L }
                     if (scanned <= 0L) error("Native SHA-256d scanner returned no progress")
+                    hashes.addAndGet(actualScanned)
+                    sessionHashes += actualScanned
                     if (jobRef.get() !== activeJob) break
-                    hashes.addAndGet(scanned)
-                    sessionHashes += scanned
                     nonce += scanned
                     val shareCount = scan.getOrElse(1) { 0L }.toInt().coerceAtLeast(0)
                     for (index in 0 until shareCount) {
