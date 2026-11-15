@@ -141,7 +141,7 @@ class MainActivity : Activity() {
                 bestShareBits.text = if (stats.bitsMissing >= 0) "NET −${stats.bitsMissing}b" else "NET —"
                 accepted.text = "S ${stats.accepted}/${stats.rejected}"
                 rejected.text = "CPU ${if (stats.cpuTempC > 0) "%.1f°".format(Locale.US, stats.cpuTempC) else "—"}"
-                status.text = if (stats.state == "Mining") "● ONLINE" else "● " + stats.state.uppercase(Locale.US)
+                status.text = if (stats.state == "Mining") "● ONLINE · HILOS ${stats.effectiveThreads}/8" else "● " + stats.state.uppercase(Locale.US) + " · HILOS ${stats.effectiveThreads}/8"
                 status.setTextColor(when (stats.state) {
                     "Mining" -> green
                     "Throttled" -> yellow
