@@ -58,8 +58,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/build.gradle.kts app/src/main/java/com/vertil/miningbtc/StratumMiner.kt app/src/main/java/com/vertil/miningbtc/MainActivity.kt app/src/main/java/com/vertil/miningbtc/MiningService.kt app/src/main/java/com/vertil/miningbtc/Bech32.kt app/src/main/AndroidManifest.xml app/src/main/res/drawable/ic_mining_btc.xml .github/workflows/android.yml README.md
-          git commit -m "Import selective v0.2.0 improvements"
-          git push origin phase2-stratum-hardening
+          if ! git diff --cached --quiet; then
+            git commit -m "Import selective v0.2.0 improvements"
+            git push origin phase2-stratum-hardening
+          else
+            echo "The selected files are already integrated."
+          fi
 
       - name: Refresh branch after import commit
         run: git pull --ff-only origin phase2-stratum-hardening
