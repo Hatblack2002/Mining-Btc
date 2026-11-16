@@ -19,7 +19,7 @@
 | RQ-11 | Real Bitcoin block regression | Bitcoin genesis coinbase/Merkle root and 80-byte genesis header/hash are used as reproducible real-mainnet fixtures. | Implemented; CI result pending |
 | RQ-12 | Variable merkle_branch length | Kotlin tests exercise zero, one, two and multiple branch elements, validate 32-byte elements, and compare the fold against an independent test implementation. | Implemented; CI result pending |
 | RQ-13 | mining.set_extranonce update | Client validates new extranonce1/size, stores them, and replaces the active job object so coinbase, Merkle root and header are rebuilt. | Implemented; app-level event test pending |
-| RQ-14 | Ping/pong and session persistence | Client no longer sends a non-standard ping unconditionally. It responds only to a request-style mining.ping received from the pool; ordinary session liveness uses inbound-traffic timeout and TCP keepalive. | Implemented; pool interoperability test pending |
+| RQ-14 | Ping/pong and session persistence | Client no longer sends a non-standard ping unconditionally. It responds only to a request-style mining.ping received from the pool; ordinary session liveness uses TCP keepalive; a read timeout merely resumes polling and does not disconnect an otherwise quiet pool. | Implemented; pool interoperability test pending |
 | RQ-15 | Two-hour telemetry: hashrate, CPU frequency, battery mAh | CSV v3 records timestamps, CPU/battery temperature, Android thermal status, hashrate, worker/affinity counts, per-CPU frequencies, app state, battery charge-counter µAh and net consumed mAh. Charge-counter values are -1 when unsupported. | Instrumentation implemented; two-hour device capture pending |
 
 ## Required evidence before Phase 2 approval
