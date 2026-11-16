@@ -9,6 +9,15 @@ static std::string to_hex(const Digest& d) {
  for(uint8_t b:d){s.push_back(h[b>>4]);s.push_back(h[b&15]);}return s;
 }
 int main() {
+ uint32_t abcState[8]={0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+ uint8_t abcBlock[64]={0x61,0x62,0x63,0x80};
+ abcBlock[63]=24;
+ sha256_compress_portable(abcState,abcBlock);
+ const uint32_t abcExpected[8]={0xba7816bf,0x8f01cfea,0x414140de,0x5dae2223,0xb00361a3,0x96177a9c,0xb410ff61,0xf20015ad};
+ for(int i=0;i<8;i++) if(abcState[i]!=abcExpected[i]) {
+  std::cerr<<"FAIL SHA-256 abc vector\\n";return 15;
+ }
+ std::cout<<"PASS SHA-256 abc known vector\\n";
  const std::string raw="01000000" "0000000000000000000000000000000000000000000000000000000000000000"
  "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a"
  "29ab5f49" "ffff001d" "1dac2b7c";
@@ -40,6 +49,8 @@ int main() {
  Digest candidate{}; Digest limit{}; limit[31]=0x10;
  candidate[31]=0x11;
  if(digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target rejection\\n";return 5;}
+ candidate=limit;
+ if(!digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL target equality boundary\\n";return 16;}
  candidate[31]=0x0f;
  if(!digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target acceptance\\n";return 6;}
  std::cout<<"PASS early target word rejection\\n";
