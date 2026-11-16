@@ -129,6 +129,7 @@ class StratumMiner(
     private val onStats: (MinerStats) -> Unit
 ) {
     private val running = AtomicBoolean(false)
+    private val sessionAuthorized = AtomicBoolean(false)
     private val paused = AtomicBoolean(false)
     private val jobRef = AtomicReference<PoolJob?>(null)
     private val difficulty = AtomicReference(1.0)
@@ -284,13 +285,15 @@ class StratumMiner(
     private fun runSession() {
         var attempt = 0
         while (running.get()) {
+            sessionAuthorized.set(false)
             runSingleSession()
             if (!running.get()) break
+            if (sessionAuthorized.get()) attempt = 0
             val delaySeconds = (1L shl attempt.coerceAtMost(5)).coerceAtMost(30L)
             lastMessage = "Reconnecting in " + delaySeconds + "s"
             emit("Reconnecting")
             try { Thread.sleep(delaySeconds * 1000L) } catch (_: InterruptedException) { break }
-            attempt++
+            attempt = (attempt + 1).coerceAtMost(5)
         }
     }
 
@@ -373,6 +376,7 @@ class StratumMiner(
             if (auth.optBoolean("result").not()) {
                 throw IllegalStateException("Pool authorization failed: ${auth.opt("error")}")
             }
+            sessionAuthorized.set(true)
 
             val suggestId = requestId.incrementAndGet()
             difficultySuggestionStatus = "Sent mining.suggest_difficulty(${config.suggestedDifficulty})"
