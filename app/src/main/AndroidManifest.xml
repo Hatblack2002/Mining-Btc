@@ -1,10 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ (API 34+) requires the special-use sub-permission for FGS
+         types that are not dataSync/mediaPlay/etc. Mining is a sustained CPU
+         workload that does not fit any standard FGS category; we declare
+         specialUse and document the use case via the property below. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Android 13+ (API 33+) requires runtime grant for the low-importance
+         persistent notification the FGS posts. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Allow the app to request whitelisting from battery optimizations so
+         Doze does not kill the miner when the screen is off. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <application
         android:allowBackup="false"
         android:label="Mining BTC"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
@@ -15,5 +32,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".BlockFoundActivity" android:exported="false" android:showWhenLocked="true" android:turnScreenOn="true" />
+        <service
+            android:name=".MiningService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-initiated SHA-256d proof-of-work computation for Bitcoin solo mining research; long-running CPU workload that must stay alive when the screen is off or the Stratum session is dropped." />
+        </service>
     </application>
 </manifest>

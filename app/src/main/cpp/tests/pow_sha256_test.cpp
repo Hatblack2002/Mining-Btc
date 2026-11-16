@@ -9,6 +9,15 @@ static std::string to_hex(const Digest& d) {
  for(uint8_t b:d){s.push_back(h[b>>4]);s.push_back(h[b&15]);}return s;
 }
 int main() {
+ uint32_t abcState[8]={0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+ uint8_t abcBlock[64]={0x61,0x62,0x63,0x80};
+ abcBlock[63]=24;
+ sha256_compress_portable(abcState,abcBlock);
+ const uint32_t abcExpected[8]={0xba7816bf,0x8f01cfea,0x414140de,0x5dae2223,0xb00361a3,0x96177a9c,0xb410ff61,0xf20015ad};
+ for(int i=0;i<8;i++) if(abcState[i]!=abcExpected[i]) {
+  std::cerr<<"FAIL SHA-256 abc vector\\n";return 15;
+ }
+ std::cout<<"PASS SHA-256 abc known vector\\n";
  const std::string raw="01000000" "0000000000000000000000000000000000000000000000000000000000000000"
  "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a"
  "29ab5f49" "ffff001d" "1dac2b7c";
@@ -40,20 +49,56 @@ int main() {
  Digest candidate{}; Digest limit{}; limit[31]=0x10;
  candidate[31]=0x11;
  if(digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target rejection\\n";return 5;}
+ candidate=limit;
+ if(!digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL target equality boundary\\n";return 16;}
  candidate[31]=0x0f;
  if(!digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target acceptance\\n";return 6;}
  std::cout<<"PASS early target word rejection\\n";
  Digest maxTarget;maxTarget.fill(0xff);
- auto batch=scan_nonce_batch(header,100,513,8,false,maxTarget);
- if(batch.hashes!=513 || batch.shares.size()!=513 || batch.shares.front()!=100 || batch.shares.back()!=612) {
+ auto batch=scan_nonce_batch(header,100,513,8,false,maxTarget,maxTarget);
+ if(batch.hashes!=513 || batch.shares.size()!=513 || batch.shares.front()!=100 || batch.shares.back()!=612 ||
+    batch.blocks.size()!=513 || batch.blocks.front()!=100 || batch.blocks.back()!=612) {
   std::cerr<<"FAIL native parallel batch scan coverage\\n";return 8;
  }
+ Digest portableBest{}; uint32_t portableBestNonce=0; bool havePortableBest=false;
+ auto lessNumeric=[](const Digest& a,const Digest& b) {
+  for(int i=31;i>=0;i--) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
+  return false;
+ };
+ for(uint32_t n=100;n<613;n++) {
+  const Digest d=hash_header_nonce(header,n,mid,false);
+  if(!havePortableBest || lessNumeric(d,portableBest)) { portableBest=d; portableBestNonce=n; havePortableBest=true; }
+ }
+ if(!batch.has_best || batch.best_nonce!=portableBestNonce || batch.best_digest!=portableBest) {
+  std::cerr<<"FAIL native best hash differs from portable reference\\n";return 10;
+ }
+ if(batch.feed.empty() || batch.feed.front().nonce!=100) {
+  std::cerr<<"FAIL native hash feed sampling\\n";return 11;
+ }
  std::cout<<"PASS native parallel batch coverage (8 workers)\\n";
+ record_best_hash(batch);
+ auto bestSnapshot=get_best_hash();
+ if(!bestSnapshot.has_best || bestSnapshot.nonce!=portableBestNonce || bestSnapshot.digest!=portableBest) {
+  std::cerr<<"FAIL process-wide best hash snapshot\\n";return 13;
+ }
+ std::cout<<"PASS process-wide best hash snapshot\\n";
+ reset_best_hash();
+ if(get_best_hash().has_best) {
+  std::cerr<<"FAIL process-wide best hash reset\\n";return 14;
+ }
+ std::cout<<"PASS process-wide best hash reset\\n";
+ std::cout<<"PASS best hash matches portable SHA-256d reference for 513 known nonces\\n";
+ std::cout<<"PASS worker-local hash feed sampling\\n";
  Digest zeroTarget{};
- auto rejectedBatch=scan_nonce_batch(header,100,128,8,false,zeroTarget);
- if(rejectedBatch.hashes!=128 || !rejectedBatch.shares.empty()) {
+ auto rejectedBatch=scan_nonce_batch(header,100,128,8,false,zeroTarget,zeroTarget);
+ if(rejectedBatch.hashes!=128 || !rejectedBatch.shares.empty() || !rejectedBatch.blocks.empty()) {
   std::cerr<<"FAIL native target filtering\\n";return 9;
  }
- std::cout<<"PASS native target filtering\\n";
+ Digest fakeEasyTarget; fakeEasyTarget.fill(0xff);
+ auto blockOnlyBatch=scan_nonce_batch(header,200,128,4,false,zeroTarget,fakeEasyTarget);
+ if(blockOnlyBatch.hashes!=128 || !blockOnlyBatch.shares.empty() || blockOnlyBatch.blocks.size()!=128) {
+  std::cerr<<"FAIL network-target hit detection independent of pool shares\\n";return 12;
+ }
+ std::cout<<"PASS native target filtering\\nPASS network-target hit detection independent of pool share target\\n";
  return 0;
 }

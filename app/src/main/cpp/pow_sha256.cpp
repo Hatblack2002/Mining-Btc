@@ -7,6 +7,12 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <sched.h>
+#include <pthread.h>
+#include <chrono>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #if defined(__ANDROID__) && defined(__aarch64__)
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
@@ -55,16 +61,41 @@ bool digest_meets_stratum_target(const Digest& h,const Digest& target) {
  }
  return true;
 }
-ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t count,unsigned threads,bool arm,const Digest& target) {
- if(count==0 || threads==0 || uint64_t(start)+uint64_t(count)>(1ULL<<32)) return {0,{}};
+static bool digest_numeric_less(const Digest& a,const Digest& b) {
+ // Bitcoin uint256 uses the reversed SHA digest byte order. Compare its
+ // most-significant 32-bit word first, then the remaining words only on ties.
+ const uint32_t ah=(uint32_t(a[31])<<24)|(uint32_t(a[30])<<16)|(uint32_t(a[29])<<8)|uint32_t(a[28]);
+ const uint32_t bh=(uint32_t(b[31])<<24)|(uint32_t(b[30])<<16)|(uint32_t(b[29])<<8)|uint32_t(b[28]);
+ if(ah!=bh) return ah<bh;
+ for(int i=27;i>=0;i--) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
+ return false;
+}
+static std::atomic<unsigned> g_last_scan_workers{0};
+static std::atomic<unsigned> g_last_scan_allowed_cpus{0};
+static std::atomic<unsigned> g_last_scan_affinity_workers{0};
+static std::atomic<int64_t> g_last_affinity_log_ms{0};
+unsigned last_scan_worker_count() { return g_last_scan_workers.load(std::memory_order_relaxed); }
+unsigned last_scan_allowed_cpu_count() { return g_last_scan_allowed_cpus.load(std::memory_order_relaxed); }
+unsigned last_scan_affinity_worker_count() { return g_last_scan_affinity_workers.load(std::memory_order_relaxed); }
+ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t count,unsigned threads,bool arm,const Digest& target,const Digest& blockTarget) {
+ if(count==0 || threads==0 || uint64_t(start)+uint64_t(count)>(1ULL<<32)) return {0,{},{},0,{},false,{}};
  const Midstate mid=make_midstate(header,arm);
+ cpu_set_t allowed; CPU_ZERO(&allowed);
+ const bool have_allowed = sched_getaffinity(0,sizeof(allowed),&allowed)==0;
+ unsigned allowed_count=0;
+ if(have_allowed) for(unsigned cpu=0;cpu<CPU_SETSIZE;cpu++) if(CPU_ISSET(cpu,&allowed)) allowed_count++;
+ g_last_scan_allowed_cpus.store(allowed_count,std::memory_order_relaxed);
  std::atomic<uint32_t> next{0};
  std::atomic<uint64_t> scanned{0};
- std::mutex foundMutex;
- std::vector<uint32_t> found;
+ std::mutex resultMutex;
+ std::vector<uint32_t> found; std::vector<uint32_t> blocks;
+ Digest bestDigest{}; uint32_t bestNonce=0; bool hasBest=false; std::vector<FeedSample> feed;
  std::vector<std::thread> workers;workers.reserve(threads);
+ std::atomic<unsigned> affinity_applied{0};
  for(unsigned t=0;t<threads;t++) workers.emplace_back([&] {
-  std::vector<uint32_t> local;
+  if(have_allowed && sched_setaffinity(0,sizeof(allowed),&allowed)==0) affinity_applied.fetch_add(1,std::memory_order_relaxed);
+  std::vector<uint32_t> local; std::vector<uint32_t> localBlocks;
+  Digest localBest{}; uint32_t localBestNonce=0; bool localHasBest=false; std::array<FeedSample,8> localFeed{}; uint32_t localFeedCount=0;
   for(;;) {
    const uint32_t offset=next.fetch_add(256,std::memory_order_relaxed);
    if(offset>=count) break;
@@ -73,14 +104,58 @@ ScanResult scan_nonce_batch(const uint8_t header[80],uint32_t start,uint32_t cou
     const uint32_t nonce=uint32_t(uint64_t(start)+i);
     const Digest digest=hash_header_nonce(header,nonce,mid,arm);
     scanned.fetch_add(1,std::memory_order_relaxed);
+    if(!localHasBest || digest_numeric_less(digest,localBest)) {
+     localBest=digest; localBestNonce=nonce; localHasBest=true;
+    }
+    // Sample one hash per 65536 nonces. Workers keep samples locally, so
+    // the hot hash loop performs no locks and no JNI callbacks.
+    if((i & 65535u)==0u) { localFeed[localFeedCount % localFeed.size()]={nonce,digest}; localFeedCount++; }
     if(digest_meets_stratum_target(digest,target)) local.push_back(nonce);
+    if(digest_meets_stratum_target(digest,blockTarget)) localBlocks.push_back(nonce);
    }
   }
-  if(!local.empty()) { std::lock_guard<std::mutex> lock(foundMutex);found.insert(found.end(),local.begin(),local.end()); }
+  std::lock_guard<std::mutex> lock(resultMutex);
+  found.insert(found.end(),local.begin(),local.end());
+  blocks.insert(blocks.end(),localBlocks.begin(),localBlocks.end());
+  const uint32_t feedEntries=std::min<uint32_t>(localFeedCount,uint32_t(localFeed.size()));
+  for(uint32_t sample=0;sample<feedEntries;sample++) feed.push_back(localFeed[sample]);
+  if(localHasBest && (!hasBest || digest_numeric_less(localBest,bestDigest))) {
+   bestDigest=localBest; bestNonce=localBestNonce; hasBest=true;
+  }
  });
  for(auto& worker:workers) worker.join();
+ g_last_scan_workers.store(static_cast<unsigned>(workers.size()),std::memory_order_relaxed);
+ g_last_scan_affinity_workers.store(affinity_applied.load(std::memory_order_relaxed),std::memory_order_relaxed);
+ const int64_t now_ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+ int64_t expected_log=g_last_affinity_log_ms.load(std::memory_order_relaxed);
+ if(now_ms-expected_log>=10000 && g_last_affinity_log_ms.compare_exchange_strong(expected_log,now_ms)) {
+#if defined(__ANDROID__)
+  __android_log_print(ANDROID_LOG_INFO,"MiningBTC-Native","workers_created=%u/%u affinity_applied=%u/%u allowed_cpus=%u",static_cast<unsigned>(workers.size()),threads,affinity_applied.load(std::memory_order_relaxed),threads,allowed_count);
+#endif
+ }
  std::sort(found.begin(),found.end());
- return {scanned.load(std::memory_order_relaxed),std::move(found)};
+ std::sort(blocks.begin(),blocks.end());
+ std::sort(feed.begin(),feed.end(),[](const FeedSample& a,const FeedSample& b){return a.nonce<b.nonce;});
+ return {scanned.load(std::memory_order_relaxed),std::move(found),std::move(blocks),bestNonce,bestDigest,hasBest,std::move(feed)};
+}
+static std::mutex bestHashMutex;
+static BestHashSnapshot globalBestHash{0,{},false};
+void record_best_hash(const ScanResult& scan) {
+ if(!scan.has_best) return;
+ std::lock_guard<std::mutex> lock(bestHashMutex);
+ if(!globalBestHash.has_best || digest_numeric_less(scan.best_digest,globalBestHash.digest)) {
+  globalBestHash.nonce=scan.best_nonce;
+  globalBestHash.digest=scan.best_digest;
+  globalBestHash.has_best=true;
+ }
+}
+BestHashSnapshot get_best_hash() {
+ std::lock_guard<std::mutex> lock(bestHashMutex);
+ return globalBestHash;
+}
+void reset_best_hash() {
+ std::lock_guard<std::mutex> lock(bestHashMutex);
+ globalBestHash=BestHashSnapshot{0,{},false};
 }
 bool digest_meets_target_early(const Digest& h,const Digest& t) {
  // Bitcoin interprets the raw SHA digest as a little-endian uint256.

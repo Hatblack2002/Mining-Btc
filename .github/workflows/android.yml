@@ -2,7 +2,7 @@ name: Android Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, phase2-stratum-hardening ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -37,10 +37,35 @@ jobs:
           cmake --build build/native-tests --parallel
           ctest --test-dir build/native-tests --output-on-failure
           ./build/native-tests/pow_sha256_test
-      - name: Validate local Stratum mock server
-        run: python3 -m py_compile tools/stratum_mock_pool.py
+      - name: Run independent Bitcoin Merkle and block-header vectors
+        run: python3 -m unittest -v tools/test_pow_vectors.py
+      - name: Run end-to-end simulated Stratum V1 session
+        run: python3 -m unittest -v tools/test_stratum_mock.py
+      - name: Validate local Stratum mock server syntax
+        run: python3 -m py_compile tools/stratum_mock_pool.py tools/test_pow_vectors.py tools/test_stratum_mock.py
+      - name: Run wallet and Bech32 regression tests
+        run: gradle --no-daemon testDebugUnitTest --stacktrace
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug --stacktrace --info 2>&1 | tee gradle-build.log
+      - name: Verify ARMv8 SHA2 instructions in packaged native library
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_BIN="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          LLVM_OBJDUMP="$NDK_BIN/llvm-objdump"
+          SO="$(find app/build/intermediates -type f -name libpowlab.so -print -quit)"
+          test -n "$SO"
+          mkdir -p build
+          "$LLVM_OBJDUMP" -d "$SO" > build/native-disassembly.txt
+          grep -Eiq '(^|[^[:alnum:]_])sha256(h2?|su0|su1)([^[:alnum:]_]|$)' build/native-disassembly.txt
+          echo "Verified SHA-256 ARMv8 instructions in $SO"
+      - name: Upload native disassembly evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mining-btc-native-disassembly
+          path: build/native-disassembly.txt
+          if-no-files-found: error
       - name: Upload build diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
