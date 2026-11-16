@@ -43,6 +43,15 @@ class StratumMockSession(unittest.TestCase):
                 self.assertEqual(difficulty["params"], [0.01])
                 self.assertEqual(notify["method"], "mining.notify")
                 self.assertTrue(notify["params"][8])
+                extranonce = read()
+                self.assertEqual(extranonce["method"], "mining.set_extranonce")
+                self.assertEqual(extranonce["params"], ["a1b2c3d4", 4])
+                # The mock pool accepts the optional request-style ping extension;
+                # the Android client must not originate it unconditionally.
+                send({"id": 99, "method": "mining.ping", "params": []})
+                pong = read()
+                self.assertEqual(pong["id"], 99)
+                self.assertTrue(pong["result"])
                 send({"id": 3, "method": "mining.suggest_difficulty", "params": [0.01]})
                 suggestion = read()
                 self.assertEqual(suggestion["id"], 3)
