@@ -66,7 +66,7 @@ Digest hash_header_nonce(const uint8_t header[80],uint32_t nonce,const Midstate&
 
 // Digest bytes are the raw SHA-256 output; Bitcoin uint256 compares them
 // from byte 31 down to byte 0. Target inputs from Kotlin are big-endian.
-static inline bool digest_meets_stratum_target(const Digest& h,const Digest& target) {
+bool digest_meets_stratum_target(const Digest& h,const Digest& target) {
  for(int i=31;i>=0;i--) {
   const uint8_t value=target[size_t(31-i)];
   if(h[size_t(i)]<value) return true;
@@ -262,7 +262,8 @@ bool digest_meets_target_early(const Digest& h,const Digest& t) {
 }
 static std::string hex(const uint8_t* p,size_t n) {
  std::ostringstream s;s<<std::hex<<std::setfill('0');
- for(size_t i=0;i<n;i++)s<<std::setw(2)<<unsigned(p[i]);return s.str();
+ for(size_t i=0;i<n;i++) s<<std::setw(2)<<unsigned(p[i]);
+ return s.str();
 }
 std::string self_test_report() {
  const std::string h="01000000" "0000000000000000000000000000000000000000000000000000000000000000"
