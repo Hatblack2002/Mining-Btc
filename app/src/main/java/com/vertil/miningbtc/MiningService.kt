@@ -49,12 +49,14 @@ class MiningService : Service() {
     private val thermalExecutor = Executors.newSingleThreadExecutor()
     private val environmentRunning = AtomicBoolean(false)
     @Volatile private var batteryTempC = 0.0
+    @Volatile private var batteryChargeStartUah = -1L
+    @Volatile private var batteryChargeCurrentUah = -1L
     @Volatile private var officialThermalStatus = -1
     @Volatile private var lastTelemetryLogMs = 0L
     @Volatile private var lastStatsPersistMs = 0L
     @Volatile private var lastNotificationMs = 0L
     @Volatile private var lastPersistedBestHash = ""
-    private val telemetryFile by lazy { File(filesDir, "mining-telemetry-v2.csv") }
+    private val telemetryFile by lazy { File(filesDir, "mining-telemetry-v3.csv") }
     private val thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
         officialThermalStatus = status
         miner?.setSystemThermalStatus(status)
@@ -109,6 +111,9 @@ class MiningService : Service() {
         }
 
         acquireWakeLock()
+        batteryChargeStartUah = -1L
+        batteryChargeCurrentUah = -1L
+        lastTelemetryLogMs = 0L
         running = true
         miner = StratumMiner(
             PoolConfig(host, port, user, pass, tls),
@@ -370,6 +375,12 @@ class MiningService : Service() {
                     val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
                     val raw = battery?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
                     batteryTempC = if (raw >= 0) raw / 10.0 else 0.0
+                    val batteryManager = getSystemService(BATTERY_SERVICE) as BatteryManager
+                    val chargeUah = batteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
+                    if (chargeUah >= 0L) {
+                        batteryChargeCurrentUah = chargeUah
+                        if (running && batteryChargeStartUah < 0L) batteryChargeStartUah = chargeUah
+                    }
                     val current = lastStats ?: MinerStats("Idle")
                     val updated = enrichStats(current)
                     lastStats = updated
@@ -389,13 +400,16 @@ class MiningService : Service() {
         val now = System.currentTimeMillis()
         if (now - lastTelemetryLogMs < 10_000L) return
         synchronized(telemetryFile) {
-            if (!telemetryFile.exists()) telemetryFile.writeText("timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs,active_native_threads,affinity_workers,allowed_cpus,cpu_frequencies_khz,app_state\n")
+            if (!telemetryFile.exists()) telemetryFile.writeText("timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,battery_charge_counter_uah,battery_net_consumed_mah,power_thermal_status,hashrate_hs,active_native_threads,affinity_workers,allowed_cpus,cpu_frequencies_khz,app_state\n")
             val sensor = stats.cpuSensorName.replace(",", "_").replace("\n", " ")
             val processState = ActivityManager.RunningAppProcessInfo()
             ActivityManager.getMyMemoryState(processState)
             val appState = if (processState.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) "foreground" else "background"
             val cpuFreqs = readCpuFrequenciesKHz()
-            telemetryFile.appendText("$now,${stats.cpuTempC},$sensor,${stats.batteryTempC},${stats.thermalStatus},${stats.hashrate},${stats.effectiveThreads},${stats.nativeAffinityThreads},${stats.nativeAllowedCpus},$cpuFreqs,$appState\n")
+            val chargeUah = batteryChargeCurrentUah
+            val consumedMah = if (batteryChargeStartUah >= 0L && chargeUah >= 0L)
+                (batteryChargeStartUah - chargeUah) / 1000.0 else -1.0
+            telemetryFile.appendText("$now,${stats.cpuTempC},$sensor,${stats.batteryTempC},$chargeUah,$consumedMah,${stats.thermalStatus},${stats.hashrate},${stats.effectiveThreads},${stats.nativeAffinityThreads},${stats.nativeAllowedCpus},$cpuFreqs,$appState\n")
             lastTelemetryLogMs = now
         }
     }
@@ -414,7 +428,7 @@ class MiningService : Service() {
     fun setHashFeedRate(rate: Int) { miner?.setHashFeedRate(rate) }
 
     fun telemetryCsvText(): String = synchronized(telemetryFile) {
-        if (telemetryFile.exists()) telemetryFile.readText() else "timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,power_thermal_status,hashrate_hs,app_state\n"
+        if (telemetryFile.exists()) telemetryFile.readText() else "timestamp_ms,cpu_temp_c,cpu_sensor,battery_temp_c,battery_charge_counter_uah,battery_net_consumed_mah,power_thermal_status,hashrate_hs,active_native_threads,affinity_workers,allowed_cpus,cpu_frequencies_khz,app_state\n"
     }
 
     private fun createNotificationChannel() {
