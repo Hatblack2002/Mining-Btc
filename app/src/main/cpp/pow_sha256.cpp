@@ -165,7 +165,7 @@ ScanResult scan_nonce_batch(const uint8_t header[80],const Midstate& mid,uint32_
   if(!performanceCpus.empty()) {
    cpu_set_t pin; CPU_ZERO(&pin);
    CPU_SET(performanceCpus[t%performanceCpus.size()],&pin);
-   if(sched_setaffinity(0,sizeof(pin),&pin)==0)
+   if(pthread_setaffinity_np(pthread_self(),sizeof(pin),&pin)==0)
     affinity_applied.fetch_add(1,std::memory_order_relaxed);
   }
   WorkerResult& local=results[t];
