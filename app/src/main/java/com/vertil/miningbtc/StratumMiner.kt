@@ -114,9 +114,9 @@ data class MinerStats(
 /**
  * Stratum v1 solo miner with thermal backoff and best-share tracking.
  *
- * The miner keeps the socket alive across thermal pauses: when the CPU
- * crosses 85 C we suspend nonce scanning but keep mining.ping and the
- * reader thread running, so the pool does not drop our session.
+ * The miner keeps the socket alive across thermal pauses: when Android
+ * reports PowerManager SEVERE or higher, nonce scanning pauses while the
+ * reader thread remains active to process pool messages and responses.
  *
  * Best-share telemetry is computed for every share we submit. The hash
  * is read in little-endian uint256 order (Bitcoin consensus) to derive
