@@ -17,7 +17,7 @@ Builds a debug APK that runs a real **Stratum v1** solo-mining client on the pho
 This is **not a toy benchmark**. The app connects to real mainnet solo pools and submits real shares. If a share meets the current network difficulty target, the pool broadcasts a real block and you collect the 3.125 BTC subsidy + fees at the configured wallet.
 
 ## Solo mining expectations
-A Snapdragon 865 typically sustains **50–200 kH/s** of SHA-256d with 8 ARMv8 SHA2 threads. The Bitcoin network hashrate is on the order of 700 EH/s; the expected time to find a block at this hashrate is astronomically large. Solo mining on a phone is a lottery ticket, not a revenue stream. You pay for electricity and battery wear; the reward is probabilistic.
+The Galaxy S20 FE Snapdragon 865 has previously measured **15.76 MH/s** in the multithreaded native benchmark (with a **16.39 MH/s** mining-session reading). Sustained throughput varies with thermal state, scheduler behavior and the active pool workload; these measurements are not a guaranteed continuous rate. The Bitcoin network hashrate is on the order of 700 EH/s; the expected time to find a block at this hashrate is astronomically large. Solo mining on a phone is a lottery ticket, not a revenue stream. You pay for electricity and battery wear; the reward is probabilistic.
 
 If you want a meaningful probability of finding a block, switch to dedicated SHA-256 ASIC hardware (Bitaxe open-source stick at ~1 TH/s, or Bitmain/MicroBT/Canaan professional miners at 100+ TH/s). The Kotlin Stratum client in this repo is reusable as a controller for those devices.
 
