@@ -24,6 +24,40 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLSocketFactory
 import kotlin.concurrent.thread
 
+internal object StratumProtocol {
+    fun validateExtranonce(extranonce1: String, extranonce2Size: Int) {
+        require(extranonce1.length % 2 == 0 && extranonce1.all { it in "0123456789abcdefABCDEF" }) {
+            "Pool extranonce1 must be valid even-length hexadecimal"
+        }
+        require(extranonce2Size in 1..16) {
+            "Pool extranonce2_size must be between 1 and 16 bytes"
+        }
+    }
+
+    fun extranonce2Hex(counter: BigInteger, sizeBytes: Int): String {
+        require(sizeBytes in 1..16) { "Invalid extranonce2 size" }
+        val modulus = BigInteger.ONE.shiftLeft(sizeBytes * 8)
+        return counter.mod(modulus).toString(16).padStart(sizeBytes * 2, '0')
+    }
+
+    fun merkleRoot(coinbase: ByteArray, branches: List<ByteArray>): ByteArray {
+        var root = sha256d(coinbase)
+        for (branch in branches) {
+            require(branch.size == 32) { "Merkle branch item must be 32 bytes" }
+            val pair = ByteArray(64)
+            System.arraycopy(root, 0, pair, 0, 32)
+            System.arraycopy(branch, 0, pair, 32, 32)
+            root = sha256d(pair)
+        }
+        return root
+    }
+
+    private fun sha256d(data: ByteArray): ByteArray {
+        val first = java.security.MessageDigest.getInstance("SHA-256").digest(data)
+        return java.security.MessageDigest.getInstance("SHA-256").digest(first)
+    }
+}
+
 data class PoolConfig(
     val host: String,
     val port: Int,
@@ -333,8 +367,11 @@ class StratumMiner(
             }
             val result = sub.optJSONArray("result") ?: error("Invalid subscribe response")
             if (result.length() < 3) error("Pool did not provide extranonce data")
-            extranonce1.set(result.getString(1))
-            extranonce2Size.set(result.getInt(2).coerceIn(1, 16))
+            val subscribedExtranonce1 = result.getString(1)
+            val subscribedExtranonce2Size = result.getInt(2)
+            StratumProtocol.validateExtranonce(subscribedExtranonce1, subscribedExtranonce2Size)
+            extranonce1.set(subscribedExtranonce1)
+            extranonce2Size.set(subscribedExtranonce2Size)
 
             val authorizeResponse = registerResponse(2)
             send(JSONObject().put("id", 2).put("method", "mining.authorize")
@@ -368,18 +405,11 @@ class StratumMiner(
             var sessionHashes = 0L
             var lastRateAt = System.nanoTime()
             var lastRateHashes = 0L
-            var lastPingAt = System.nanoTime()
             val useArm = NativePowEngine.nativeCapabilities().contains("arm64_sha2=true")
 
             while (running.get() && socketRef.get() === socket && !socket.isClosed) {
                 val loopNow = System.nanoTime()
                 expirePendingSubmits(loopNow)
-                if (loopNow - lastPingAt >= 30_000_000_000L) {
-                    val pingId = requestId.incrementAndGet()
-                    pingSentAt[pingId] = loopNow
-                    send(JSONObject().put("id", pingId).put("method", "mining.ping").put("params", JSONArray()))
-                    lastPingAt = loopNow
-                }
                 // Thermal pause suspends hashing but keeps Stratum keepalive and
                 // submit timeouts active so the pool session does not go stale.
                 if (paused.get()) {
@@ -397,11 +427,9 @@ class StratumMiner(
                 if (job !== activeJob) {
                     activeJob = job
                     nonce = 0
-                    val extra = extraCounter.toString(16).padStart(extranonce2Size.get() * 2, '0')
-                        .takeLast(extranonce2Size.get() * 2)
+                    val extra = StratumProtocol.extranonce2Hex(extraCounter, extranonce2Size.get())
                     val coinbase = hex(job.coinb1) + hex(extranonce1.get()) + hex(extra) + hex(job.coinb2)
-                    var merkle = doubleSha(coinbase, digest1, digest2)
-                    for (branch in job.branches) merkle = doubleSha(merkle + hex(branch), digest1, digest2)
+                    val merkle = StratumProtocol.merkleRoot(coinbase, job.branches.map { hex(it) })
                     headerPrefix = le(job.version, 4) + swapWords(hex(job.prevhash)) + merkle +
                         le(job.ntime, 4) + le(job.nbits, 4)
                     targetRef.set(targetFor(difficulty.get()))
@@ -412,8 +440,7 @@ class StratumMiner(
                 val prefix = headerPrefix ?: continue
                 val header = ByteArray(80)
                 System.arraycopy(prefix, 0, header, 0, 76)
-                val currentExtra = extraCounter.toString(16).padStart(extranonce2Size.get() * 2, '0')
-                    .takeLast(extranonce2Size.get() * 2)
+                val currentExtra = StratumProtocol.extranonce2Hex(extraCounter, extranonce2Size.get())
                 while (running.get() && jobRef.get() === activeJob && nonce <= 0xffffffffL) {
                     if (paused.get()) break
                     val threads = effectiveThreads.get().coerceAtLeast(1)
@@ -546,6 +573,27 @@ class StratumMiner(
                         difficulty.set(nextDifficulty)
                         targetRef.set(targetFor(nextDifficulty))
                     }
+                    "mining.set_extranonce" -> {
+                        val p = obj.getJSONArray("params")
+                        require(p.length() >= 2) { "mining.set_extranonce requires extranonce1 and extranonce2_size" }
+                        val nextExtranonce1 = p.getString(0)
+                        val nextExtranonce2Size = p.getInt(1)
+                        StratumProtocol.validateExtranonce(nextExtranonce1, nextExtranonce2Size)
+                        extranonce1.set(nextExtranonce1)
+                        extranonce2Size.set(nextExtranonce2Size)
+                        // Force the active job to rebuild its coinbase, Merkle root and header.
+                        jobRef.get()?.let { current -> jobRef.set(current.copy()) }
+                        lastMessage = "Pool changed extranonce parameters; rebuilding current job"
+                        emit("Mining")
+                    }
+                    "mining.ping" -> {
+                        // Some pools send a request-style ping; Stratum V1 does not require
+                        // clients to originate this extension. Reply only when the pool asks.
+                        val pingId = obj.opt("id")
+                        if (pingId != null && pingId != JSONObject.NULL) {
+                            send(JSONObject().put("id", pingId).put("result", true).put("error", JSONObject.NULL))
+                        }
+                    }
                     "client.reconnect" -> {
                         lastMessage = "Pool requested reconnect"
                         try { socketRef.get()?.close() } catch (_: Exception) {}
@@ -597,7 +645,10 @@ class StratumMiner(
                     emit("Mining", lastReportedRate)
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            lastMessage = "Invalid Stratum message: " + (e.message ?: e.javaClass.simpleName)
+            emit("Protocol error")
+        }
     }
 
     private fun expirePendingSubmits(nowNanos: Long) {
