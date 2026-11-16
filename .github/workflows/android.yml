@@ -57,7 +57,7 @@ jobs:
           test -n "$SO"
           mkdir -p build
           "$LLVM_OBJDUMP" -d "$SO" > build/native-disassembly.txt
-          grep -Eiq '\\bsha256(h2?|su0|su1)\\b' build/native-disassembly.txt
+          grep -Eiq '(^|[^[:alnum:]_])sha256(h2?|su0|su1)([^[:alnum:]_]|$)' build/native-disassembly.txt
           echo "Verified SHA-256 ARMv8 instructions in $SO"
       - name: Upload native disassembly evidence
         if: success()
