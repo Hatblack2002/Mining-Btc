@@ -5,11 +5,11 @@ Android-first Bitcoin solo mining client for the **Samsung Galaxy S20 FE (Snapdr
 Builds a debug APK that runs a real **Stratum v1** solo-mining client on the phone:
 - Native ARMv8 SHA2 double-SHA-256 (with portable fallback) via JNI
 - 8-thread parallel nonce scanning on the device CPU
-- Full Stratum v1 protocol: subscribe, authorize, suggest_difficulty, notify, set_difficulty, ping, submit, client.reconnect
+- Stratum V1: subscribe, authorize, suggest_difficulty, notify, set_difficulty, set_extranonce, submit and client.reconnect; request-style ping is answered only when the pool initiates it (the client does not send a non-standard ping unconditionally)
 - IPv4/IPv6 dual-stack connect with bounded exponential reconnect
 - TLS support
 - Foreground Service + WakeLock (mines while screen is off)
-- Thermal backoff: 8 threads below 75°C, 4 threads 75–85°C, paused above 85°C
+- Thermal protection: all eight workers remain enabled until Android PowerManager reports SEVERE or higher; hashing then pauses while the Stratum reader remains active, and resumes after the official status stays below SEVERE for 30 seconds. Sensor temperature is recorded as telemetry, not used as a fabricated universal cutoff.
 - Best-share telemetry: tracks the highest share difficulty and leading-zero bit count ever produced
 - Bech32 / Bech32m mainnet wallet validation before START
 - Persistent stats across reboots (hashes, accepted, rejected, best share)
@@ -29,14 +29,18 @@ Never add seed phrases, private keys, wallet backups, or credentials to this rep
 ## Build
 GitHub Actions builds a debug APK using JDK 17, Android SDK 35, NDK 27.2.12479018, CMake 3.22.1, and Gradle 8.9. Every push to `main` triggers the build workflow. The APK is published as the `mining-btc-debug-apk` workflow artifact.
 
-The native SHA-256d unit tests (genesis hash parity, target comparison, batch scanner) run before the APK build.
+The CI pipeline runs native SHA-256d vectors, target and batch-scanner tests, Bitcoin genesis Merkle/header vectors, Stratum mock-session tests, Kotlin unit tests, and the Android debug build. It also disassembles the packaged ARM64 library and checks for SHA-256 ARMv8 instructions.
 
 ## Safety
-- The miner can heat the phone to 75–90°C within minutes. The built-in thermal backoff throttles threads at 75°C and pauses at 85°C. Do not disable it.
+- The miner can heat the phone to 75–90°C within minutes. Thermal protection follows Android PowerManager status: hashing pauses at SEVERE or higher and resumes only after 30 seconds below SEVERE. Do not disable it.
 - Sustained CPU workloads degrade lithium-ion batteries. Run plugged in, ventilated, and remove any case.
 - Stop if the phone becomes uncomfortably hot, the screen shows thermal warnings, or charging slows down unexpectedly.
 - Do not leave the phone mining unattended for days without checking in.
 - Solo mining consumes electricity. At typical smartphone power draw (3–6 W) this is negligible per day, but understand your local electricity cost before running 24/7.
+
+## Phase 2 hardening and validation
+
+See docs/phase2-validation-matrix.md for the exact RQ-01–RQ-15 status. The app now validates extranonce updates, rebuilds the active job after mining.set_extranonce, answers request-style mining.ping only when the pool sends it, and records battery charge-counter deltas in mining-telemetry-v3.csv. A two-hour device run is still required; the charge-counter field is reported as unavailable (-1) when the device does not expose it.
 
 ## Roadmap
 1. ✅ Android SHA-256d benchmark and Bech32 address validation.
