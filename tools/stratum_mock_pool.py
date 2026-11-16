@@ -44,7 +44,8 @@ class Handler(socketserver.StreamRequestHandler):
                     format(int(time.time()), "08x"),
                     True
                 ]})
-                print("authorized; sent mock job at difficulty 0.01", flush=True)
+                self.send({"id": None, "method": "mining.set_extranonce", "params": ["a1b2c3d4", 4]})
+                print("authorized; sent mock job and extranonce update at difficulty 0.01", flush=True)
             elif method == "mining.suggest_difficulty":
                 self.send({"id": request_id, "result": True, "error": None})
                 print("accepted suggested difficulty:", msg.get("params"), flush=True)
