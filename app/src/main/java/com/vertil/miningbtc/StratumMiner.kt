@@ -161,7 +161,7 @@ class StratumMiner(
     private val suggestDifficultyRequestId = AtomicLong(-1)
     private val maxThreads = 8
     private val effectiveThreads = AtomicInteger(maxThreads)
-    private val feedRateHz = AtomicInteger(30)
+    private val feedRateHz = AtomicInteger(4)
     private val feedLock = Any()
     private val pendingFeed = java.util.ArrayDeque<HashFeedEntry>()
     private val liveFeed = java.util.ArrayDeque<HashFeedEntry>()
@@ -204,7 +204,7 @@ class StratumMiner(
         thread(name = "stratum-connection") { runSession() }
     }
 
-    fun setHashFeedRate(rate: Int) { feedRateHz.set(rate.coerceIn(10, 60)) }
+    fun setHashFeedRate(rate: Int) { feedRateHz.set(rate.coerceIn(2, 5)) }
 
     fun setSystemThermalStatus(status: Int) {
         officialThermalStatus = status
@@ -435,6 +435,9 @@ class StratumMiner(
                 val prefix = headerPrefix ?: continue
                 val header = ByteArray(80)
                 System.arraycopy(prefix, 0, header, 0, 76)
+                // The first 64 header bytes are invariant for this job/extranonce2.
+                // Prepare once here; the nonce loop hashes only the second SHA block.
+                val midstate = NativePowEngine.nativePrepareHeader(header, useArm)
                 val currentExtra = StratumProtocol.extranonce2Hex(extraCounter, extranonce2Size.get())
                 while (running.get() && jobRef.get() === activeJob && nonce <= 0xffffffffL) {
                     if (paused.get()) break
@@ -442,7 +445,7 @@ class StratumMiner(
                     val remaining = 0x1_0000_0000L - nonce
                     val batchCount = minOf(nativeBatchSize.toLong(), remaining).toInt()
                     var scanTarget = targetRef.get()
-                    var scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, threads, useArm, scanTarget, networkTargetRef.get())
+                    var scan = NativePowEngine.nativeScanBatch(header, midstate, nonce, batchCount, threads, useArm, scanTarget, networkTargetRef.get())
                     updateBestFromNativeBatch(scan)
                     var actualScanned = scan.getOrElse(0) { 0L }
                     while (targetRef.get() !== scanTarget && jobRef.get() === activeJob) {
@@ -882,6 +885,6 @@ class StratumMiner(
     }
 
     companion object {
-        private const val nativeBatchSize = 262144
+        private const val nativeBatchSize = 2097152
     }
 }
