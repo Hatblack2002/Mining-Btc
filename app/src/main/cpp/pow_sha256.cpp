@@ -74,6 +74,10 @@ static inline bool digest_meets_stratum_target(const Digest& h,const Digest& tar
  }
  return true;
 }
+static inline bool target_less_equal(const Digest& a,const Digest& b) {
+ for(int i=0;i<32;i++) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
+ return true;
+}
 
 static inline bool digest_numeric_less(const Digest& a,const Digest& b) {
  for(int i=31;i>=0;i--) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
@@ -176,13 +180,22 @@ ScanResult scan_nonce_batch(const uint8_t header[80],const Midstate& mid,uint32_
     ++local.feedCount;
    }
 
-   // The network target is normally stricter than the pool share target.
-   // Check it first: a block hit is also a pool share and needs only one compare.
-   if(digest_meets_stratum_target(digest,blockTarget)) {
-    local.blocks.push_back(nonce);
-    local.shares.push_back(nonce);
-   } else if(digest_meets_stratum_target(digest,target)) {
-    local.shares.push_back(nonce);
+   // Check the stricter target first. If it passes, the looser target
+   // necessarily passes too; this remains correct for unusual pool difficulties.
+   if(target_less_equal(blockTarget,target)) {
+    if(digest_meets_stratum_target(digest,blockTarget)) {
+     local.blocks.push_back(nonce);
+     local.shares.push_back(nonce);
+    } else if(digest_meets_stratum_target(digest,target)) {
+     local.shares.push_back(nonce);
+    }
+   } else {
+    if(digest_meets_stratum_target(digest,target)) {
+     local.shares.push_back(nonce);
+     local.blocks.push_back(nonce);
+    } else if(digest_meets_stratum_target(digest,blockTarget)) {
+     local.blocks.push_back(nonce);
+    }
    }
   }
  });
