@@ -55,10 +55,15 @@ int main() {
  if(!digest_meets_target_early(candidate,limit)){std::cerr<<"FAIL early target acceptance\\n";return 6;}
  std::cout<<"PASS early target word rejection\\n";
  Digest maxTarget;maxTarget.fill(0xff);
- auto batch=scan_nonce_batch(header,100,513,8,false,maxTarget,maxTarget);
+ auto batch=scan_nonce_batch(header,mid,100,513,8,false,maxTarget,maxTarget);
  if(batch.hashes!=513 || batch.shares.size()!=513 || batch.shares.front()!=100 || batch.shares.back()!=612 ||
     batch.blocks.size()!=513 || batch.blocks.front()!=100 || batch.blocks.back()!=612) {
   std::cerr<<"FAIL native parallel batch scan coverage\\n";return 8;
+ }
+ for(size_t i=0;i<batch.shares.size();i++) {
+  if(batch.shares[i]!=100u+uint32_t(i) || batch.blocks[i]!=100u+uint32_t(i)) {
+   std::cerr<<"FAIL static nonce striding overlap or gap\\n";return 17;
+  }
  }
  Digest portableBest{}; uint32_t portableBestNonce=0; bool havePortableBest=false;
  auto lessNumeric=[](const Digest& a,const Digest& b) {
@@ -90,15 +95,20 @@ int main() {
  std::cout<<"PASS best hash matches portable SHA-256d reference for 513 known nonces\\n";
  std::cout<<"PASS worker-local hash feed sampling\\n";
  Digest zeroTarget{};
- auto rejectedBatch=scan_nonce_batch(header,100,128,8,false,zeroTarget,zeroTarget);
+ auto rejectedBatch=scan_nonce_batch(header,mid,100,128,8,false,zeroTarget,zeroTarget);
  if(rejectedBatch.hashes!=128 || !rejectedBatch.shares.empty() || !rejectedBatch.blocks.empty()) {
   std::cerr<<"FAIL native target filtering\\n";return 9;
  }
  Digest fakeEasyTarget; fakeEasyTarget.fill(0xff);
- auto blockOnlyBatch=scan_nonce_batch(header,200,128,4,false,zeroTarget,fakeEasyTarget);
+ auto blockOnlyBatch=scan_nonce_batch(header,mid,200,128,4,false,zeroTarget,fakeEasyTarget);
  if(blockOnlyBatch.hashes!=128 || !blockOnlyBatch.shares.empty() || blockOnlyBatch.blocks.size()!=128) {
   std::cerr<<"FAIL network-target hit detection independent of pool shares\\n";return 12;
  }
  std::cout<<"PASS native target filtering\\nPASS network-target hit detection independent of pool share target\\n";
+ auto poolOnlyBatch=scan_nonce_batch(header,mid,300,128,8,false,fakeEasyTarget,zeroTarget);
+ if(poolOnlyBatch.hashes!=128 || poolOnlyBatch.shares.size()!=128 || !poolOnlyBatch.blocks.empty()) {
+  std::cerr<<"FAIL pool target looser than network target\\n";return 18;
+ }
+ std::cout<<"PASS pool/network target ordering in both difficulty directions\\n";
  return 0;
 }

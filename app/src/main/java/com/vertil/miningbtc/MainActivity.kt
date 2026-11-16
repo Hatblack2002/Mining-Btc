@@ -89,7 +89,7 @@ class MainActivity : Activity() {
     private var bound = false
     private var benchRunning = false
     private var feedPaused = false
-    private var feedRateHz = 30
+    private var feedRateHz = 4
     private var configSaved = false
     private var miningScreen = false
     private var previousHashCount = 0L
@@ -368,8 +368,8 @@ class MainActivity : Activity() {
 
     private fun showMiningScreen() {
         miningScreen = true
-        feedRateHz = 30
-        service?.setHashFeedRate(30)
+        feedRateHz = 4
+        service?.setHashFeedRate(4)
         root.removeAllViews()
         listOf(rate, status, bestShareDiff, bestShareBits, accepted, rejected, thermalBar, networkTargetLabel, stopButton)
             .forEach { view -> (view.parent as? ViewGroup)?.removeView(view) }
@@ -591,9 +591,10 @@ class MainActivity : Activity() {
     }
 
     private fun setFeedRate(rate: Int) {
-        feedRateHz = rate
-        service?.setHashFeedRate(rate)
-        toast("Hash feed configurado: $rate filas/s")
+        val bounded = rate.coerceIn(2, 5)
+        feedRateHz = bounded
+        service?.setHashFeedRate(bounded)
+        toast("Muestra en vivo: $bounded actualizaciones/s")
     }
 
     private fun renderHashFeed(entries: List<HashFeedEntry>) {

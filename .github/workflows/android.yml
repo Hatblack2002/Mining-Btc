@@ -2,9 +2,9 @@ name: Android Build
 
 on:
   push:
-    branches: [ main, phase2-stratum-hardening ]
+    branches: [ main, phase2-stratum-hardening, performance-recovery ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, phase2-stratum-hardening ]
   workflow_dispatch:
 
 permissions:

@@ -42,6 +42,12 @@ The CI pipeline runs native SHA-256d vectors, target and batch-scanner tests, Bi
 
 See docs/phase2-validation-matrix.md for the exact RQ-01–RQ-15 status. The app now validates extranonce updates, rebuilds the active job after mining.set_extranonce, answers request-style mining.ping only when the pool sends it, and records battery charge-counter deltas in mining-telemetry-v3.csv. A two-hour device run is still required; the charge-counter field is reported as unavailable (-1) when the device does not expose it.
 
+## Snapdragon 865 performance recovery
+
+The Stratum scanner now reuses one Midstate per job/extranonce2, uses worker-local counters and static nonce striding, and applies best-effort affinity to the high-capacity CPUs allowed by Android. Scan batches are 2,097,152 nonces and the live hash feed is limited to 4 Hz. The native hash loop contains no JNI calls or shared mutex operations.
+
+See [the performance regression audit and device acceptance procedure](docs/performance-regression-audit.md). The 15 MH/s recovery target is not considered achieved until measured on the Galaxy S20 FE during a real CKPool session with accepted shares and thermal telemetry. CI compilation alone does not establish device hashrate.
+
 ## Roadmap
 1. ✅ Android SHA-256d benchmark and Bech32 address validation.
 2. ✅ Measure sustained hashrate, thermal throttling, and energy use on real hardware.
