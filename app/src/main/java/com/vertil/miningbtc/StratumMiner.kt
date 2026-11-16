@@ -450,7 +450,7 @@ class StratumMiner(
                     var actualScanned = scan.getOrElse(0) { 0L }
                     while (targetRef.get() !== scanTarget && jobRef.get() === activeJob) {
                         scanTarget = targetRef.get()
-                        scan = NativePowEngine.nativeScanBatch(header, nonce, batchCount, threads, useArm, scanTarget, networkTargetRef.get())
+                        scan = NativePowEngine.nativeScanBatch(header, midstate, nonce, batchCount, threads, useArm, scanTarget, networkTargetRef.get())
                         updateBestFromNativeBatch(scan)
                         actualScanned += scan.getOrElse(0) { 0L }
                     }
