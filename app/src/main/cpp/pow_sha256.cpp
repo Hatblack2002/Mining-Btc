@@ -175,7 +175,7 @@ ScanResult scan_nonce_batch(const uint8_t header[80],const Midstate& mid,uint32_
     local.best=digest; local.bestNonce=nonce; local.hasBest=true;
    }
    // One display sample per 65536 nonce positions; no locks/JNI in this loop.
-   if((offset&65535u)==0u) {
+   if(((offset/threads)&65535u)==0u) {
     local.feed[local.feedCount%local.feed.size()]={nonce,digest};
     ++local.feedCount;
    }
