@@ -591,9 +591,10 @@ class MainActivity : Activity() {
     }
 
     private fun setFeedRate(rate: Int) {
-        feedRateHz = rate
-        service?.setHashFeedRate(rate)
-        toast("Muestra en vivo limitada a ${rate.coerceIn(2, 5)} actualizaciones/s")
+        val bounded = rate.coerceIn(2, 5)
+        feedRateHz = bounded
+        service?.setHashFeedRate(bounded)
+        toast("Muestra en vivo: $bounded actualizaciones/s")
     }
 
     private fun renderHashFeed(entries: List<HashFeedEntry>) {
