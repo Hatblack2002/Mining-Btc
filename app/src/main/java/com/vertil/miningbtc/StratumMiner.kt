@@ -13,7 +13,6 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
-import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -155,7 +154,6 @@ class StratumMiner(
         val obsolete: AtomicBoolean = AtomicBoolean(false)
     )
     private val submitIds = java.util.concurrent.ConcurrentHashMap<Long, PendingSubmit>()
-    private val pingSentAt = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     private val latencyMs = AtomicLong(-1)
     private val lastSubmitLatencyMs = AtomicLong(-1)
     private val staleShares = AtomicLong(initialStats.staleShares)
@@ -395,8 +393,6 @@ class StratumMiner(
             }
             lastMessage = "Authorized; waiting for pool work"
             emit("Waiting for work")
-            val digest1 = MessageDigest.getInstance("SHA-256")
-            val digest2 = MessageDigest.getInstance("SHA-256")
             var nonce = 0L
             var extraCounter = BigInteger.ZERO
             var activeJob: PoolJob? = null
@@ -618,10 +614,6 @@ class StratumMiner(
                     }
                     lastMessage = difficultySuggestionStatus
                     emit("Mining")
-                } else if (pingSentAt.containsKey(id)) {
-                    val sentAt = pingSentAt.remove(id) ?: 0L
-                    if (sentAt > 0L) latencyMs.set((System.nanoTime() - sentAt) / 1_000_000L)
-                    emit("Mining")
                 } else if (submitIds.containsKey(id)) {
                     val pending = submitIds.remove(id) ?: return
                     val submittedNonce = pending.nonce
@@ -833,9 +825,6 @@ class StratumMiner(
         require(bytes.size == 32) { "Pool prevhash must be 32 bytes" }
         return ByteArray(32) { i -> bytes[(i / 4) * 4 + (3 - i % 4)] }
     }
-
-    private fun doubleSha(data: ByteArray, first: MessageDigest, second: MessageDigest): ByteArray =
-        second.digest(first.digest(data))
 
     private fun targetFor(diff: Double): ByteArray {
         val max = BigInteger("00000000ffff0000000000000000000000000000000000000000000000000000", 16)
