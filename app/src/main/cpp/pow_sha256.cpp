@@ -80,7 +80,10 @@ static inline bool target_less_equal(const Digest& a,const Digest& b) {
 }
 
 static inline bool digest_numeric_less(const Digest& a,const Digest& b) {
- for(int i=31;i>=0;i--) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
+ const uint32_t ah=(uint32_t(a[31])<<24)|(uint32_t(a[30])<<16)|(uint32_t(a[29])<<8)|uint32_t(a[28]);
+ const uint32_t bh=(uint32_t(b[31])<<24)|(uint32_t(b[30])<<16)|(uint32_t(b[29])<<8)|uint32_t(b[28]);
+ if(ah!=bh) return ah<bh;
+ for(int i=27;i>=0;i--) if(a[size_t(i)]!=b[size_t(i)]) return a[size_t(i)]<b[size_t(i)];
  return false;
 }
 
