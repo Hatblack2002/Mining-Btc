@@ -102,20 +102,28 @@ struct CpuCapacity {
 };
 
 static std::vector<unsigned> performance_cpu_set(const cpu_set_t& allowed) {
+ // Sysfs topology is immutable for the process lifetime; read it once rather
+ // than opening CPU files on every multi-million-nonce batch.
+ static const std::vector<CpuCapacity> topology=[] {
+  std::vector<CpuCapacity> all;
+  const unsigned count=std::min<unsigned>(CPU_SETSIZE,std::max(1u,std::thread::hardware_concurrency()));
+  all.reserve(count);
+  for(unsigned cpu=0;cpu<count;cpu++) {
+   int capacity=0;
+   {
+    std::ifstream f("/sys/devices/system/cpu/cpu"+std::to_string(cpu)+"/cpu_capacity");
+    if(!(f>>capacity)) capacity=0;
+   }
+   if(capacity<=0) {
+    std::ifstream f("/sys/devices/system/cpu/cpu"+std::to_string(cpu)+"/cpufreq/cpuinfo_max_freq");
+    if(f>>capacity) capacity/=1000;
+   }
+   all.push_back({cpu,capacity});
+  }
+  return all;
+ }();
  std::vector<CpuCapacity> candidates;
- for(unsigned cpu=0;cpu<CPU_SETSIZE;cpu++) {
-  if(!CPU_ISSET(cpu,&allowed)) continue;
-  int capacity=0;
-  {
-   std::ifstream f("/sys/devices/system/cpu/cpu"+std::to_string(cpu)+"/cpu_capacity");
-   if(!(f>>capacity)) capacity=0;
-  }
-  if(capacity<=0) {
-   std::ifstream f("/sys/devices/system/cpu/cpu"+std::to_string(cpu)+"/cpufreq/cpuinfo_max_freq");
-   if(f>>capacity) capacity/=1000;
-  }
-  candidates.push_back({cpu,capacity});
- }
+ for(const CpuCapacity& cpu:topology) if(CPU_ISSET(cpu.cpu,&allowed)) candidates.push_back(cpu);
  if(candidates.empty()) return {};
  const bool hasCapacity=std::any_of(candidates.begin(),candidates.end(),[](const CpuCapacity& c){return c.capacity>0;});
  if(!hasCapacity) return {};
