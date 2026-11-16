@@ -47,6 +47,25 @@ jobs:
         run: gradle --no-daemon testDebugUnitTest --stacktrace
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug --stacktrace --info 2>&1 | tee gradle-build.log
+      - name: Verify ARMv8 SHA2 instructions in packaged native library
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_BIN="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          LLVM_OBJDUMP="$NDK_BIN/llvm-objdump"
+          SO="$(find app/build/intermediates -type f -name libpowlab.so -print -quit)"
+          test -n "$SO"
+          mkdir -p build
+          "$LLVM_OBJDUMP" -d "$SO" > build/native-disassembly.txt
+          grep -Eiq '\\bsha256(h2?|su0|su1)\\b' build/native-disassembly.txt
+          echo "Verified SHA-256 ARMv8 instructions in $SO"
+      - name: Upload native disassembly evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mining-btc-native-disassembly
+          path: build/native-disassembly.txt
+          if-no-files-found: error
       - name: Upload build diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
