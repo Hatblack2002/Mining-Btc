@@ -157,7 +157,6 @@ class StratumMiner(
     private val latencyMs = AtomicLong(-1)
     private val lastSubmitLatencyMs = AtomicLong(-1)
     private val staleShares = AtomicLong(initialStats.staleShares)
-    private val lastInboundAtNanos = AtomicLong(0L)
     private val suggestDifficultyRequestId = AtomicLong(-1)
     private val maxThreads = 8
     private val effectiveThreads = AtomicInteger(maxThreads)
@@ -327,7 +326,6 @@ class StratumMiner(
             } else plain
             socket.keepAlive = true
             socket.soTimeout = 45_000
-            lastInboundAtNanos.set(System.nanoTime())
             socketRef.set(socket)
             jobRef.set(null)
             val writer = PrintWriter(socket.getOutputStream(), true)
@@ -338,14 +336,11 @@ class StratumMiner(
                     while (running.get()) {
                         val line = try {
                             reader.readLine()
-                        } catch (timeout: SocketTimeoutException) {
-                            val idleNanos = System.nanoTime() - lastInboundAtNanos.get()
-                            if (idleNanos >= 120_000_000_000L) {
-                                throw SocketTimeoutException("No Stratum traffic from pool for 120 seconds")
-                            }
+                        } catch (_: SocketTimeoutException) {
+                            // A quiet pool is not a dead pool. TCP keepalive and actual
+                            // socket closure/write failures govern session liveness.
                             continue
                         } ?: break
-                        lastInboundAtNanos.set(System.nanoTime())
                         handleLine(line)
                     }
                 } catch (_: Exception) {}
